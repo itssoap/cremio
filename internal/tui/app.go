@@ -49,7 +49,7 @@ func NewApp(cfg *config.Config, hist *history.WatchHistory) App {
 		home:       NewHomeModel(client, cfg),
 		search:     NewSearchModel(client, cfg),
 		addons:     NewAddonsModel(client, cfg),
-		historyTab: NewHistoryModel(hist),
+		historyTab: NewHistoryModel(hist, client, cfg),
 		detail:     detail,
 		streams:    NewStreamsModel(client, cfg),
 	}
@@ -120,6 +120,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case ScreenHome:
 				a.screen = ScreenSearch
 				if a.config.AutoFocusSearch {
+					a.search.inputFocused = true
 					return a, a.search.input.Focus()
 				}
 				return a, nil
@@ -129,7 +130,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case ScreenAddons:
 				a.screen = ScreenHistory
 				a.historyTab.Refresh()
-				return a, nil
+				return a, a.historyTab.FetchMissingTitles()
 			case ScreenHistory:
 				a.screen = ScreenHome
 				return a, a.home.Init()
@@ -211,6 +212,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case addonsRefreshedMsg:
 		a.addons, _ = a.addons.Update(msg)
+		return a, nil
+
+	case historyTitleMsg:
+		a.historyTab, _ = a.historyTab.Update(msg)
 		return a, nil
 	}
 
