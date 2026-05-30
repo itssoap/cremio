@@ -8,9 +8,12 @@ import (
 	"github.com/itssoap/cremio/internal/appdir"
 )
 
+const cinemetaURL = "https://v3-cinemeta.strem.io/manifest.json"
+
 type Config struct {
-	Addons []string `json:"addons"`
-	path   string
+	Addons          []string `json:"addons"`
+	AutoFocusSearch bool     `json:"auto_focus_search"`
+	path            string
 }
 
 func Load() (*Config, error) {
@@ -25,7 +28,8 @@ func Load() (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			cfg.Addons = []string{}
+			cfg.Addons = []string{cinemetaURL}
+			_ = cfg.Save()
 			return cfg, nil
 		}
 		return nil, err

@@ -14,6 +14,7 @@ const (
 	ScreenHome Screen = iota
 	ScreenSearch
 	ScreenAddons
+	ScreenHistory
 	ScreenDetail
 	ScreenStreams
 )
@@ -28,11 +29,12 @@ type App struct {
 	config  *config.Config
 	history *history.WatchHistory
 
-	home    HomeModel
-	search  SearchModel
-	addons  AddonsModel
-	detail  DetailModel
-	streams StreamsModel
+	home       HomeModel
+	search     SearchModel
+	addons     AddonsModel
+	historyTab HistoryModel
+	detail     DetailModel
+	streams    StreamsModel
 }
 
 func NewApp(cfg *config.Config, hist *history.WatchHistory) App {
@@ -40,15 +42,16 @@ func NewApp(cfg *config.Config, hist *history.WatchHistory) App {
 	detail := NewDetailModel(client, cfg)
 	detail.history = hist
 	return App{
-		screen:  ScreenHome,
-		client:  client,
-		config:  cfg,
-		history: hist,
-		home:    NewHomeModel(client, cfg),
-		search:  NewSearchModel(client, cfg),
-		addons:  NewAddonsModel(client, cfg),
-		detail:  detail,
-		streams: NewStreamsModel(client, cfg),
+		screen:     ScreenHome,
+		client:     client,
+		config:     cfg,
+		history:    hist,
+		home:       NewHomeModel(client, cfg),
+		search:     NewSearchModel(client, cfg),
+		addons:     NewAddonsModel(client, cfg),
+		historyTab: NewHistoryModel(hist),
+		detail:     detail,
+		streams:    NewStreamsModel(client, cfg),
 	}
 }
 
@@ -65,6 +68,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.home.SetSize(msg.Width-4, contentHeight)
 		a.search.SetSize(msg.Width-4, contentHeight)
 		a.addons.SetSize(msg.Width-4, contentHeight)
+		a.historyTab.SetSize(msg.Width-4, contentHeight)
 		a.detail.SetSize(msg.Width-4, contentHeight)
 		a.streams.SetSize(msg.Width-4, contentHeight)
 		return a, nil
@@ -115,11 +119,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch a.screen {
 			case ScreenHome:
 				a.screen = ScreenSearch
+				if a.config.AutoFocusSearch {
+					return a, a.search.input.Focus()
+				}
 				return a, nil
 			case ScreenSearch:
 				a.screen = ScreenAddons
 				return a, nil
 			case ScreenAddons:
+				a.screen = ScreenHistory
+				a.historyTab.Refresh()
+				return a, nil
+			case ScreenHistory:
 				a.screen = ScreenHome
 				return a, a.home.Init()
 			}
@@ -191,6 +202,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.detail.meta != nil && a.detail.viewingEpisodes {
 				a.detail.showEpisodesForSeason(a.detail.selectedSeason)
 			}
+			a.historyTab.Refresh()
 		}
 		// Pass to streams for launch status update
 		var cmd tea.Cmd
@@ -210,6 +222,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.search, cmd = a.search.Update(msg)
 	case ScreenAddons:
 		a.addons, cmd = a.addons.Update(msg)
+	case ScreenHistory:
+		a.historyTab, cmd = a.historyTab.Update(msg)
 	case ScreenDetail:
 		if keyMsg, ok := msg.(tea.KeyMsg); ok && (keyMsg.String() == "esc" || keyMsg.String() == "escape") {
 			if a.detail.viewingEpisodes {
@@ -237,6 +251,8 @@ func (a App) View() string {
 		content = a.search.View()
 	case ScreenAddons:
 		content = a.addons.View()
+	case ScreenHistory:
+		content = a.historyTab.View()
 	case ScreenDetail:
 		content = a.detail.View()
 	case ScreenStreams:
@@ -253,6 +269,7 @@ func (a App) renderTabs() string {
 		{"Home", ScreenHome},
 		{"Search", ScreenSearch},
 		{"Addons", ScreenAddons},
+		{"History", ScreenHistory},
 	}
 
 	var rendered []string

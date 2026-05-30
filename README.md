@@ -11,13 +11,16 @@ A functional way to access Stremio. Cremio is a TUI client built in Go with [Bub
 
 ## Features
 
-- Browse catalogs from all installed Stremio addons (Note: Cremio doesn't come with any addon to provide Search capabilities or Streams, add your own addons)
+- Browse catalogs from all installed Stremio addons
+- Cinemeta (v3) installed by default on first run; can be removed via the Addons tab
 - Full-text search with automatic fallback to client-side filtering
-- Series support with season/episode navigation 
+- Optional auto-focus of the search bar when switching to the Search tab (set `auto_focus_search` in config)
+- History tab for quick access to watched movies and shows
+- Series support with season/episode navigation
 - Stream resolution across multiple addons
 - Playback via mpv (should be in PATH)
 - Addon management (add/remove by URL with manifest validation)
-- Persistent configuration stored as JSON (in USERPROFILE)
+- Persistent configuration stored as JSON
 
 ## Prerequisites
 
@@ -79,15 +82,23 @@ Cremio stores its configuration as a JSON file:
 - **Windows:** `%APPDATA%\cremio\config.json`
 - **Linux/macOS:** `~/.config/cremio/config.json`
 
-The config file holds the list of installed addon base URLs. It is created automatically on first use.
+The config file holds the list of installed addon base URLs and optional settings. It is created automatically on first use. Cinemeta (v3) is added as the default addon on first run.
 
 ```json
 {
   "addons": [
-    "https://example-addon.com/manifest.json"
-  ]
+    "https://v3-cinemeta.strem.io/manifest.json"
+  ],
+  "auto_focus_search": false
 }
 ```
+
+### Configuration fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `addons` | array of strings | `[cinemeta URL]` | List of installed Stremio addon manifest URLs |
+| `auto_focus_search` | boolean | `false` | When true, the search input is automatically focused when switching to the Search tab |
 
 ## Watch History
 
@@ -129,7 +140,7 @@ The file uses a [Trakt](https://trakt.tv)-compatible structure, so it can be exp
 
 | Key        | Action                                      |
 |------------|---------------------------------------------|
-| `tab`      | Cycle between Home, Search, and Addons tabs |
+| `tab`      | Cycle between Home, Search, Addons, and History tabs |
 | `/`        | Focus the search input (Search tab)         |
 | `enter`    | Select item / submit input                  |
 | `esc`      | Go back / unfocus input                     |
@@ -158,6 +169,7 @@ internal/
     addons.go            Addon management screen
     detail.go            Movie/series detail and episode list
     streams.go           Stream list and mpv launch
+    historytab.go        History tab for browsing watched movies and shows
     styles.go            Lipgloss style definitions
 winres/
   winres.json            Windows resource manifest for go-winres
@@ -185,6 +197,7 @@ Use the table below to find the right file for what you want to improve:
 | **Addons tab** - add/remove addons, URL validation, manifest display | `internal/tui/addons.go` |
 | **Detail screen** - movie/series info layout, episode/season list, watched toggle | `internal/tui/detail.go` |
 | **Streams screen** - stream list, filter, info panel, mpv launch, batch mode | `internal/tui/streams.go` |
+| **History tab** - watched movies/shows list, navigation to detail | `internal/tui/historytab.go` |
 | **Screen routing & global keys** - tab switching, ESC behaviour, app-level messages | `internal/tui/app.go` |
 | **Colours, borders, text styles** | `internal/tui/styles.go` |
 | **Stremio addon protocol** - HTTP client, endpoint logic | `internal/stremio/client.go` |
@@ -199,7 +212,7 @@ Use the table below to find the right file for what you want to improve:
 
 Q. Search is broken? I see results showing in Stremio, but not on this app.
 
-A. Please add the Cinemeta Add-on. Some addons lack Search functionality on their catalogues by-default.
+A. Cinemeta is installed by default on first run. If you removed it, re-add it from the Addons tab. Some addons lack search capability in their catalogs by default.
 
 Q. Sometimes the Search results appear blank, but it seems like I am able to navigate across them.
 
