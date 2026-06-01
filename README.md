@@ -9,6 +9,24 @@ A functional way to access Stremio. Cremio is a TUI client built in Go with [Bub
 
 `Disclaimer: This tool neither allows nor encourages streaming and distribution of pirated media. The tool reflects a Proof-of-concept of a Stremio client without any Graphical interface, and the usage in all aspects is subject to the Users' liability and not the tools'.`
 
+## Quick Install
+
+### Windows
+
+```powershell
+irm https://raw.githubusercontent.com/itssoap/cremio/main/install.ps1 | iex
+```
+
+### Linux / macOS / FreeBSD
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itssoap/cremio/main/install.sh | bash
+```
+
+Both scripts download the latest binary, install it to a local bin directory, and add it to your `PATH`. Run the same command again anytime to check for and install updates.
+
+**Prerequisite:** [mpv](https://mpv.io/installation/) must be in your system `PATH`.
+
 ## Features
 
 - Browse catalogs from all installed Stremio addons
@@ -24,9 +42,11 @@ A functional way to access Stremio. Cremio is a TUI client built in Go with [Bub
 
 ## Prerequisites
 
-- **Go 1.25 or later** (for building from source)
-- **mpv** in your system PATH (for stream playback)
+- **mpv** in your system `PATH` (for stream playback)
+- **Go 1.25 or later** (only needed to build from source)
 - **go-winres** (optional, only needed to embed a custom icon on Windows builds)
+
+Pre-built Windows binaries are available on the [releases page](https://github.com/itssoap/cremio/releases). Use the [Quick Install](#quick-install) command above for the easiest setup.
 
 ## Development Setup
 
