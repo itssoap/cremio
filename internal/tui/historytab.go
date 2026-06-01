@@ -172,6 +172,9 @@ func (m *HistoryModel) FetchMissingTitles() tea.Cmd {
 				if err != nil || resp.Meta.Name == "" {
 					continue
 				}
+				if resp.Meta.ID != "" && resp.Meta.ID != id {
+					continue
+				}
 				return historyTitleMsg{imdbID: id, title: resp.Meta.Name}
 			}
 			return nil

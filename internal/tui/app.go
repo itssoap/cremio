@@ -118,6 +118,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			switch a.screen {
 			case ScreenHome:
+				if a.hasHistory() {
+					a.screen = ScreenHistory
+					a.historyTab.Refresh()
+					return a, a.historyTab.FetchMissingTitles()
+				}
+				a.screen = ScreenSearch
+				if a.config.AutoFocusSearch {
+					a.search.inputFocused = true
+					return a, a.search.input.Focus()
+				}
+				return a, nil
+			case ScreenHistory:
 				a.screen = ScreenSearch
 				if a.config.AutoFocusSearch {
 					a.search.inputFocused = true
@@ -128,10 +140,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.screen = ScreenAddons
 				return a, nil
 			case ScreenAddons:
-				a.screen = ScreenHistory
-				a.historyTab.Refresh()
-				return a, a.historyTab.FetchMissingTitles()
-			case ScreenHistory:
 				a.screen = ScreenHome
 				return a, a.home.Init()
 			}
@@ -266,16 +274,20 @@ func (a App) View() string {
 	return AppStyle.Render(lipgloss.JoinVertical(lipgloss.Left, tabs, content))
 }
 
+func (a App) hasHistory() bool {
+	return a.history != nil && (len(a.history.Movies) > 0 || len(a.history.Shows) > 0)
+}
+
 func (a App) renderTabs() string {
-	tabs := []struct {
+	type tab struct {
 		name   string
 		screen Screen
-	}{
-		{"Home", ScreenHome},
-		{"Search", ScreenSearch},
-		{"Addons", ScreenAddons},
-		{"History", ScreenHistory},
 	}
+	tabs := []tab{{"Home", ScreenHome}}
+	if a.hasHistory() {
+		tabs = append(tabs, tab{"History", ScreenHistory})
+	}
+	tabs = append(tabs, tab{"Search", ScreenSearch}, tab{"Addons", ScreenAddons})
 
 	var rendered []string
 	for _, t := range tabs {
