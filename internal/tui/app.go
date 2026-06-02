@@ -152,6 +152,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.detail.loading = true
 		a.detail.meta = nil
 		a.detail.err = nil
+		a.detail.requestedID = history.ExtractIMDBID(msg.ID)
 		return a, tea.Batch(a.detail.spinner.Tick, a.detail.LoadMeta(msg))
 
 	case NavigateToStreamsMsg:

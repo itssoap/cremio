@@ -66,6 +66,7 @@ type DetailModel struct {
 	contentType     string
 	viewingEpisodes bool
 	selectedSeason  int
+	requestedID     string // the ID used to navigate here; used for history lookups
 }
 
 type metaLoadedMsg struct {
@@ -99,8 +100,15 @@ func (m *DetailModel) SetSize(w, h int) {
 	m.list.SetSize(w, h-10)
 }
 
+func (m *DetailModel) historyID() string {
+	if m.requestedID != "" {
+		return m.requestedID
+	}
+	return history.ExtractIMDBID(m.meta.ID)
+}
+
 func (m *DetailModel) showSeasons() {
-	imdbID := history.ExtractIMDBID(m.meta.ID)
+	imdbID := m.historyID()
 	seasonMap := make(map[int]int)
 	for _, v := range m.meta.Videos {
 		seasonMap[v.Season]++
@@ -121,7 +129,7 @@ func (m *DetailModel) showSeasons() {
 }
 
 func (m *DetailModel) showEpisodesForSeason(season int) {
-	imdbID := history.ExtractIMDBID(m.meta.ID)
+	imdbID := m.historyID()
 	var videos []stremio.Video
 	for _, v := range m.meta.Videos {
 		if v.Season == season {
@@ -277,7 +285,7 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			if m.meta == nil || m.history == nil {
 				return m, nil
 			}
-			imdbID := history.ExtractIMDBID(m.meta.ID)
+			imdbID := m.historyID()
 			if m.viewingEpisodes {
 				if item, ok := m.list.SelectedItem().(videoItem); ok {
 					m.history.ToggleEpisode(imdbID, item.video.Season, item.video.Episode)

@@ -83,24 +83,35 @@ func now() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// ExtractIMDBID extracts the IMDB ID from a Stremio meta/video ID.
-// e.g. "tt1234567" or "tt1234567:1:2" → "tt1234567"
+// ExtractIMDBID extracts the content ID from a Stremio meta/video ID,
+// stripping any trailing season:episode suffix.
+// e.g. "tt1234567" → "tt1234567"
+//
+//	"tt1234567:1:2" → "tt1234567"
+//	"tmdb:12345" → "tmdb:12345"
+//	"tmdb:12345:1:2" → "tmdb:12345"
 func ExtractIMDBID(id string) string {
-	if idx := strings.Index(id, ":"); idx != -1 {
-		return id[:idx]
+	parts := strings.Split(id, ":")
+	n := len(parts)
+	if n >= 3 {
+		var s, e int
+		if _, err := fmt.Sscanf(parts[n-2]+":"+parts[n-1], "%d:%d", &s, &e); err == nil {
+			return strings.Join(parts[:n-2], ":")
+		}
 	}
 	return id
 }
 
 // ParseEpisodeID extracts the season and episode numbers from a Stremio video ID.
-// e.g. "tt1234567:2:5" → (2, 5)
+// Works for both "tt1234567:2:5" and "tmdb:12345:2:5" → (2, 5).
 // Returns (0, 0) if the ID is not an episode format.
 func ParseEpisodeID(id string) (season, episode int) {
-	parts := strings.SplitN(id, ":", 3)
-	if len(parts) != 3 {
+	parts := strings.Split(id, ":")
+	n := len(parts)
+	if n < 3 {
 		return 0, 0
 	}
-	_, err := fmt.Sscanf(parts[1]+":"+parts[2], "%d:%d", &season, &episode)
+	_, err := fmt.Sscanf(parts[n-2]+":"+parts[n-1], "%d:%d", &season, &episode)
 	if err != nil {
 		return 0, 0
 	}
