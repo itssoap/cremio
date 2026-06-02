@@ -51,14 +51,28 @@ function Install-Cremio {
 
     function Get-LatestRelease {
         $api = "https://api.github.com/repos/$Repo/releases/latest"
-        try {
-            return Invoke-RestMethod -Uri $api -Method Get -ErrorAction Stop
-        } catch {
-            Write-Info "GitHub API call failed ($_), retrying..."
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
             try {
                 return Invoke-RestMethod -Uri $api -Method Get -ErrorAction Stop
             } catch {
-                throw "Could not reach GitHub API. Check your internet connection and try again.`n$($_.Exception.Message)"
+                $status = $null
+                try { $status = [int]$_.Exception.Response.StatusCode } catch {}
+
+                if ($status -in @(403, 429)) {
+                    $resetEpoch = $null
+                    try { $resetEpoch = $_.Exception.Response.Headers.GetValues('X-RateLimit-Reset')[0] } catch {}
+                    if ($resetEpoch) {
+                        $resetAt = [DateTimeOffset]::FromUnixTimeSeconds([long]$resetEpoch).LocalDateTime.ToString('HH:mm')
+                        throw "GitHub API rate limit exceeded. Limit resets at $resetAt -- try again then, OR fetch it from https://github.com/itssoap/cremio/releases/latest."
+                    }
+                    throw "GitHub API rate limit exceeded. Wait a few minutes and try again OR fetch it from https://github.com/itssoap/cremio/releases/latest."
+                }
+
+                if ($attempt -lt 2) {
+                    Write-Info "GitHub API call failed, retrying..."
+                } else {
+                    throw "Could not reach GitHub API. Check your internet connection and try again.`n$($_.Exception.Message)"
+                }
             }
         }
     }
@@ -75,21 +89,43 @@ function Install-Cremio {
     $tag     = $release.tag_name
     Write-Info "Latest release: $tag"
 
-    # 2. Check if already installed and up-to-date
-    $installedTag = $null
-    if (Test-Path $VersionFile) {
-        $installedTag = (Get-Content $VersionFile -Raw).Trim()
+    # 2. Detect existing installation (PATH or managed install dir) and version
+    $existingBin     = $null
+    $existingVersion = $null
+
+    $existingCmd = Get-Command $Binary -ErrorAction SilentlyContinue
+    if ($existingCmd) {
+        $existingBin = $existingCmd.Source
+        # Read version from Windows resource info (embedded by go-winres)
+        try {
+            $vi = (Get-Item $existingBin -ErrorAction Stop).VersionInfo
+            if ($vi.ProductVersion -and $vi.ProductVersion -notmatch '^0\.0') {
+                $existingVersion = $vi.ProductVersion.TrimStart('v')
+            }
+        } catch {}
     }
 
-    if ($installedTag -and (Test-Path (Join-Path $InstallDir $Binary))) {
-        if ($installedTag -eq $tag) {
-            Write-Host ""
-            Write-Host "  Cremio $installedTag is already up to date at:" -ForegroundColor DarkGreen
-            Write-Info $InstallDir
-            Write-Host ""
-            return
-        }
-        Write-Step "New version available: $tag (installed: $installedTag)"
+    # Fall back to the installer-managed .version file
+    if (-not $existingVersion -and (Test-Path $VersionFile)) {
+        $existingVersion = (Get-Content $VersionFile -Raw).Trim()
+    }
+
+    # Compare versions (strip leading 'v' for normalisation)
+    $normTag      = $tag.TrimStart('v')
+    $normExisting = if ($existingVersion) { $existingVersion.TrimStart('v') } else { $null }
+
+    if ($normExisting -and $normExisting -eq $normTag) {
+        $displayPath = if ($existingBin) { $existingBin } else { Join-Path $InstallDir $Binary }
+        Write-Host ""
+        Write-Host "  Cremio v$normExisting is already up to date at:" -ForegroundColor DarkGreen
+        Write-Info $displayPath
+        Write-Host ""
+        return
+    }
+
+    if ($existingVersion) {
+        Write-Step "Updating cremio v$($existingVersion.TrimStart('v')) -> $tag"
+        if ($existingBin) { Write-Info "Found existing binary: $existingBin" }
     } else {
         Write-Step "Installing cremio $tag..."
     }
@@ -114,11 +150,25 @@ function Install-Cremio {
     Write-Info "Downloading $($asset.name) ..."
 
     # 4. Download and install
-    if (-not (Test-Path $InstallDir)) {
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    # Replace the existing binary in-place when writable; otherwise use $InstallDir
+    $dest            = Join-Path $InstallDir $Binary
+    $replacedInPlace = $false
+    if ($existingBin -and $existingBin -ne $dest) {
+        $testFile = Join-Path (Split-Path $existingBin -Parent) ".cremio_write_test_$(Get-Random)"
+        try {
+            [System.IO.File]::WriteAllText($testFile, "")
+            Remove-Item $testFile -Force -ErrorAction SilentlyContinue
+            $dest            = $existingBin
+            $replacedInPlace = $true
+            Write-Info "Replacing in-place: $dest"
+        } catch {
+            Write-Info "Cannot write to $(Split-Path $existingBin -Parent) -- installing to $InstallDir instead"
+        }
     }
 
-    $dest = Join-Path $InstallDir $Binary
+    if (-not (Test-Path (Split-Path $dest -Parent))) {
+        New-Item -ItemType Directory -Path (Split-Path $dest -Parent) -Force | Out-Null
+    }
 
     # Download to temp file, then move (robust against partial downloads)
     $tmpFile = Join-Path $env:TEMP "cremio_$([Guid]::NewGuid().ToString('N')).exe"
@@ -134,8 +184,8 @@ function Install-Cremio {
     # 5. Record version
     $tag | Set-Content -Path $VersionFile -Force -NoNewline
 
-    # 6. Add to PATH
-    if (-not $NoPath) {
+    # 6. Add to PATH (skip if we replaced an existing binary that is already on PATH)
+    if (-not $NoPath -and -not $replacedInPlace) {
         Write-Step "Checking PATH..."
 
         $currentUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -168,10 +218,21 @@ function Install-Cremio {
     }
 
     Write-Host ""
-    Write-Host "  Cremio $tag installed successfully!" -ForegroundColor Green
+    if ($existingVersion) {
+        Write-Host "  Cremio updated v$($existingVersion.TrimStart('v')) -> $tag successfully!" -ForegroundColor Green
+    } else {
+        Write-Host "  Cremio $tag installed successfully!" -ForegroundColor Green
+    }
     Write-Host "  Run 'cremio' in a new terminal to get started." -ForegroundColor Cyan
     Write-Host "  Re-run this script anytime to check for updates." -ForegroundColor DarkGray
     Write-Host ""
 }
 
-Install-Cremio
+try {
+    Install-Cremio
+} catch {
+    Write-Host ""
+    Write-Host "  ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host ""
+    exit 1
+}

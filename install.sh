@@ -39,22 +39,33 @@ detect_os() {
 
 get_latest_release() {
     local api="https://api.github.com/repos/${REPO}/releases/latest"
-    local response
+    local response http_code
 
-    # Try with curl (supports redirects, auth headers from environment)
     if command -v curl >/dev/null 2>&1; then
-        response=$(curl -fsSL "$api" 2>/dev/null) || {
-            # Fallback: try wget
-            if command -v wget >/dev/null 2>&1; then
-                response=$(wget -qO- "$api" 2>/dev/null) || err "Could not reach GitHub API. Check your internet connection."
-            else
-                err "Neither curl nor wget found. Install one of them and try again."
-            fi
-        }
+        local tmp; tmp=$(mktemp)
+        http_code=$(curl -sSL -o "$tmp" -w "%{http_code}" "$api" 2>/dev/null) || http_code="000"
+        response=$(cat "$tmp"); rm -f "$tmp"
     elif command -v wget >/dev/null 2>&1; then
         response=$(wget -qO- "$api" 2>/dev/null) || err "Could not reach GitHub API. Check your internet connection."
+        http_code="200"
     else
         err "Neither curl nor wget found. Install one of them and try again."
+    fi
+
+    case "$http_code" in
+        403|429) err "GitHub API rate limit exceeded. Wait a few minutes and try again OR fetch it from https://github.com/itssoap/cremio/releases/latest." ;;
+        200)     ;;
+        000)     err "Could not reach GitHub API. Check your internet connection." ;;
+        *)       err "GitHub API returned HTTP ${http_code}. Check your connection and try again." ;;
+    esac
+
+    # Catch secondary rate limits that return 200 with an error body
+    if printf '%s' "$response" | grep -qi '"rate limit'; then
+        err "GitHub API rate limit exceeded. Wait a few minutes and try again OR fetch it from https://github.com/itssoap/cremio/releases/latest."
+    fi
+
+    if [ -z "$response" ]; then
+        err "Could not reach GitHub API. Check your internet connection."
     fi
 
     printf '%s\n' "$response"
@@ -91,24 +102,49 @@ if [ -z "$TAG" ]; then
     err "Could not parse release tag from GitHub API response."
 fi
 
-# 3. Check if already installed and up-to-date
+# 3. Detect existing installation and determine install destination
 INSTALL_DIR="${HOME}/.local/bin"
 VERSION_FILE="${HOME}/.local/share/cremio/.version"
 BIN_PATH="${INSTALL_DIR}/${BINARY}"
 
+# Check for an existing cremio binary anywhere on PATH
+existing_bin=""
+if command -v "$BINARY" >/dev/null 2>&1; then
+    existing_bin=$(command -v "$BINARY")
+fi
+
+# Read the installer-managed version file
 installed_tag=""
 if [ -f "$VERSION_FILE" ]; then
     installed_tag=$(cat "$VERSION_FILE")
 fi
 
-if [ -n "$installed_tag" ] && [ -f "$BIN_PATH" ]; then
-    if [ "$installed_tag" = "$TAG" ]; then
-        printf '\n  \033[32mCremio %s is already up to date at:\033[0m\n' "$installed_tag"
-        info "$BIN_PATH"
-        printf '\n'
-        exit 0
+# If a binary exists at a different PATH location and its directory is writable, replace it in-place
+replaced_in_place=false
+if [ -n "$existing_bin" ] && [ "$existing_bin" != "$BIN_PATH" ]; then
+    if [ -w "$(dirname "$existing_bin")" ]; then
+        BIN_PATH="$existing_bin"
+        INSTALL_DIR="$(dirname "$existing_bin")"
+        replaced_in_place=true
+    else
+        info "Cannot write to $(dirname "$existing_bin") -- installing to $INSTALL_DIR instead"
     fi
-    step "New version available: ${TAG} (installed: ${installed_tag})"
+fi
+
+# Normalise version tags for comparison (strip leading 'v')
+norm_tag=$(printf '%s' "$TAG" | sed 's/^v//')
+norm_existing=$(printf '%s' "$installed_tag" | sed 's/^v//')
+
+if [ -n "$norm_existing" ] && [ "$norm_existing" = "$norm_tag" ]; then
+    printf '\n  \033[32mCremio %s is already up to date at:\033[0m\n' "$installed_tag"
+    info "$BIN_PATH"
+    printf '\n'
+    exit 0
+fi
+
+if [ -n "$installed_tag" ]; then
+    step "Updating cremio ${installed_tag} -> ${TAG}"
+    if [ -n "$existing_bin" ]; then info "Found existing binary: ${existing_bin}"; fi
 else
     step "Installing cremio ${TAG}..."
 fi
@@ -144,30 +180,32 @@ info "Installed to ${BIN_PATH}"
 # 6. Record version
 printf '%s' "$TAG" > "$VERSION_FILE"
 
-# 7. Add to PATH if needed
-step "Checking PATH..."
-if ! echo "$PATH" | tr ':' '\n' | grep -qxF "$INSTALL_DIR"; then
-    info "Adding ${INSTALL_DIR} to PATH via shell profile"
+# 7. Add to PATH if needed (skip if we replaced an existing binary already on PATH)
+if ! $replaced_in_place; then
+    step "Checking PATH..."
+    if ! echo "$PATH" | tr ':' '\n' | grep -qxF "$INSTALL_DIR"; then
+        info "Adding ${INSTALL_DIR} to PATH via shell profile"
 
-    # Detect shell profile
-    SHELL_PROFILE=""
-    case "$(basename "$SHELL")" in
-        zsh)  SHELL_PROFILE="${HOME}/.zshrc"  ;;
-        bash) SHELL_PROFILE="${HOME}/.bashrc" ;;
-        fish) SHELL_PROFILE="${HOME}/.config/fish/config.fish" ;;
-        *)    SHELL_PROFILE="${HOME}/.profile" ;;
-    esac
+        # Detect shell profile
+        SHELL_PROFILE=""
+        case "$(basename "$SHELL")" in
+            zsh)  SHELL_PROFILE="${HOME}/.zshrc"  ;;
+            bash) SHELL_PROFILE="${HOME}/.bashrc" ;;
+            fish) SHELL_PROFILE="${HOME}/.config/fish/config.fish" ;;
+            *)    SHELL_PROFILE="${HOME}/.profile" ;;
+        esac
 
-    if [ "$(basename "$SHELL")" = "fish" ]; then
-        echo "fish_add_path ${INSTALL_DIR}" >> "$SHELL_PROFILE"
+        if [ "$(basename "$SHELL")" = "fish" ]; then
+            echo "fish_add_path ${INSTALL_DIR}" >> "$SHELL_PROFILE"
+        else
+            printf '\n# Added by cremio installer\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$SHELL_PROFILE"
+        fi
+
+        info "Added to ${SHELL_PROFILE}. Restart your shell or run:"
+        info "  export PATH=\"${INSTALL_DIR}:\$PATH\""
     else
-        printf '\n# Added by cremio installer\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$SHELL_PROFILE"
+        info "${INSTALL_DIR} is already on PATH."
     fi
-
-    info "Added to ${SHELL_PROFILE}. Restart your shell or run:"
-    info "  export PATH=\"${INSTALL_DIR}:\$PATH\""
-else
-    info "${INSTALL_DIR} is already on PATH."
 fi
 
 # 8. Verify
@@ -179,7 +217,11 @@ else
     err "Installation verification failed: ${BIN_PATH} not found or empty"
 fi
 
-printf '\n  \033[32mCremio %s installed successfully!\033[0m\n' "$TAG"
+if [ -n "$installed_tag" ]; then
+    printf '\n  \033[32mCremio updated %s -> %s successfully!\033[0m\n' "$installed_tag" "$TAG"
+else
+    printf '\n  \033[32mCremio %s installed successfully!\033[0m\n' "$TAG"
+fi
 printf '  \033[36mRun "cremio" in a new terminal to get started.\033[0m\n'
 printf '  \033[90mRe-run this script anytime to check for updates.\033[0m\n'
 printf '\n'
