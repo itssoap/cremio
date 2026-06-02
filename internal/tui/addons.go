@@ -25,10 +25,16 @@ func (a addonItem) Title() string {
 	return a.url
 }
 func (a addonItem) Description() string {
+	desc := ""
 	if a.manifest != nil {
-		return a.manifest.Description
+		desc = a.manifest.Description
+	} else {
+		desc = "Loading..."
 	}
-	return "Loading..."
+	if a.url == config.CinemetaURL {
+		return desc + " [required]"
+	}
+	return desc
 }
 func (a addonItem) FilterValue() string { return a.url }
 
@@ -182,6 +188,10 @@ func (m AddonsModel) Update(msg tea.Msg) (AddonsModel, tea.Cmd) {
 				return m, m.input.Focus()
 			case "d", "delete":
 				if item, ok := m.list.SelectedItem().(addonItem); ok {
+					if item.url == config.CinemetaURL {
+						m.err = fmt.Errorf("Cinemeta is required for title resolution and cannot be removed")
+						return m, nil
+					}
 					m.config.RemoveAddon(item.url)
 					if err := m.config.Save(); err != nil {
 						m.saveErr = err
@@ -222,7 +232,7 @@ func (m AddonsModel) View() string {
 		if m.saveErr != nil {
 			sections = append(sections, ErrorStyle.Render(fmt.Sprintf("⚠ Could not save config: %v", m.saveErr)))
 		}
-		sections = append(sections, HelpStyle.Render("a: add addon • d: remove selected • tab: switch tab"))
+		sections = append(sections, HelpStyle.Render("a: add addon • d: remove selected (Cinemeta is locked) • tab: switch tab"))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)

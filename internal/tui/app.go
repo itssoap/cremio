@@ -56,7 +56,7 @@ func NewApp(cfg *config.Config, hist *history.WatchHistory) App {
 }
 
 func (a App) Init() tea.Cmd {
-	return tea.Batch(a.home.Init(), a.addons.Init())
+	return tea.Batch(a.home.Init(), a.addons.Init(), a.search.Init())
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -224,6 +224,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case historyTitleMsg:
 		a.historyTab, _ = a.historyTab.Update(msg)
+		return a, nil
+
+	case searchAddonNameMsg:
+		a.search, _ = a.search.Update(msg)
 		return a, nil
 	}
 
