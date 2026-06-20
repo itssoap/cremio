@@ -195,7 +195,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case mpvLaunchedMsg:
 		if a.history != nil && msg.videoID != "" {
-			imdbID := history.ExtractIMDBID(msg.videoID)
+			// Use the detail model's history ID when available so that
+			// addons using different ID schemes (e.g. tvdb:XXXX in meta
+			// but tt-prefixed video IDs) stay consistent.
+			imdbID := a.detail.historyID()
+			if imdbID == "" {
+				imdbID = history.ExtractIMDBID(msg.videoID)
+			}
 			if msg.videoType == "movie" {
 				if !a.history.IsMovieWatched(imdbID) {
 					a.history.ToggleMovie(imdbID)
