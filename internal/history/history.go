@@ -11,8 +11,7 @@ import (
 	"github.com/itssoap/cremio/internal/appdir"
 )
 
-// WatchHistory uses a Trakt-compatible JSON structure so it can be
-// exported and imported directly into Trakt via /sync/history.
+// WatchHistory tracks locally watched movies and episodes as JSON.
 type WatchHistory struct {
 	Movies []WatchedMovie `json:"movies,omitempty"`
 	Shows  []WatchedShow  `json:"shows,omitempty"`
@@ -21,11 +20,11 @@ type WatchHistory struct {
 
 type WatchedMovie struct {
 	WatchedAt string   `json:"watched_at"`
-	IDs       TraktIDs `json:"ids"`
+	IDs       WatchIDs `json:"ids"`
 }
 
 type WatchedShow struct {
-	IDs     TraktIDs        `json:"ids"`
+	IDs     WatchIDs        `json:"ids"`
 	Seasons []WatchedSeason `json:"seasons"`
 }
 
@@ -39,7 +38,7 @@ type WatchedEpisode struct {
 	WatchedAt string `json:"watched_at"`
 }
 
-type TraktIDs struct {
+type WatchIDs struct {
 	IMDB string `json:"imdb"`
 }
 
@@ -173,7 +172,7 @@ func (h *WatchHistory) ToggleMovie(imdbID string) bool {
 	}
 	h.Movies = append(h.Movies, WatchedMovie{
 		WatchedAt: now(),
-		IDs:       TraktIDs{IMDB: imdbID},
+		IDs:       WatchIDs{IMDB: imdbID},
 	})
 	return true
 }
@@ -191,7 +190,7 @@ func (h *WatchHistory) ToggleEpisode(imdbID string, season, episode int) bool {
 
 	if show == nil {
 		h.Shows = append(h.Shows, WatchedShow{
-			IDs: TraktIDs{IMDB: imdbID},
+			IDs: WatchIDs{IMDB: imdbID},
 		})
 		show = &h.Shows[len(h.Shows)-1]
 	}

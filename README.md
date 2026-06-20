@@ -129,7 +129,7 @@ Cremio tracks watched movies and episodes in a local JSON file:
 
 Episodes are automatically marked as watched when played via mpv. You can also manually toggle watched status with the `w` key - on individual episodes, whole seasons, or movies.
 
-The file uses a [Trakt](https://trakt.tv)-compatible structure, so it can be exported and imported directly via Trakt's `/sync/history` API:
+The file uses a simple JSON structure:
 
 ```json
 {
@@ -177,7 +177,7 @@ The file uses a [Trakt](https://trakt.tv)-compatible structure, so it can be exp
 main.go                  Entry point
 internal/
   config/config.go       Configuration loading, saving, addon management
-  history/history.go     Watch history tracking and Trakt-compatible export
+  history/history.go     Watch history tracking
   player/mpv.go          mpv process launcher
   stremio/
     client.go            HTTP client for the Stremio Addon Protocol
@@ -222,7 +222,7 @@ Use the table below to find the right file for what you want to improve:
 | **Colours, borders, text styles** | `internal/tui/styles.go` |
 | **Stremio addon protocol** - HTTP client, endpoint logic | `internal/stremio/client.go` |
 | **Stremio types** - manifest, catalog, meta, stream structs | `internal/stremio/types.go` |
-| **Watch history** - toggle watched, Trakt-compatible JSON structure | `internal/history/history.go` |
+| **Watch history** - toggle watched, local JSON structure | `internal/history/history.go` |
 | **Config** - addon list persistence, config file path | `internal/config/config.go` |
 | **App data directory** - where config & history are stored | `internal/appdir/appdir.go` |
 | **mpv integration** - launch flags, extra arguments | `internal/player/mpv.go` |
