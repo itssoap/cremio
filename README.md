@@ -109,7 +109,8 @@ The config file holds the list of installed addon base URLs and optional setting
   "addons": [
     "https://v3-cinemeta.strem.io/manifest.json"
   ],
-  "auto_focus_search": false
+  "auto_focus_search": false,
+  "playlist_mode": false
 }
 ```
 
@@ -119,6 +120,7 @@ The config file holds the list of installed addon base URLs and optional setting
 |-------|------|---------|-------------|
 | `addons` | array of strings | `[cinemeta URL]` | List of installed Stremio addon manifest URLs |
 | `auto_focus_search` | boolean | `false` | When true, the search input is automatically focused when switching to the Search tab |
+| `playlist_mode` | boolean | `false` | When true, playing a stream in batch mode sends all episodes as an mpv playlist starting at the selected episode |
 
 ## Watch History
 

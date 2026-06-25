@@ -192,6 +192,42 @@ func (m *StreamsModel) applyFilter() {
 	m.list.SetItems(filtered)
 }
 
+// buildPlaylist collects the first playable stream per episode label from the
+// current visible list, preserving episode order. Returns the URL list and the
+// 0-based index of the selected item's episode.
+func (m *StreamsModel) buildPlaylist(selected streamItem) (urls []string, startIdx int) {
+	seen := make(map[string]bool)
+	var ordered []struct {
+		label string
+		url   string
+	}
+
+	for _, li := range m.list.Items() {
+		si, ok := li.(streamItem)
+		if !ok || si.episodeLabel == "" {
+			continue
+		}
+		url := si.stream.PlayableURL()
+		if url == "" || seen[si.episodeLabel] {
+			continue
+		}
+		seen[si.episodeLabel] = true
+		ordered = append(ordered, struct {
+			label string
+			url   string
+		}{si.episodeLabel, url})
+	}
+
+	urls = make([]string, len(ordered))
+	for i, entry := range ordered {
+		urls[i] = entry.url
+		if entry.label == selected.episodeLabel {
+			startIdx = i
+		}
+	}
+	return urls, startIdx
+}
+
 func (m StreamsModel) Update(msg tea.Msg) (StreamsModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
@@ -294,12 +330,28 @@ func (m StreamsModel) Update(msg tea.Msg) (StreamsModel, tea.Cmd) {
 			if item, ok := m.list.SelectedItem().(streamItem); ok {
 				m.launching = true
 				m.playErr = nil
-				url := item.stream.PlayableURL()
 				videoID := item.videoID
 				contentType := m.contentType
 				if videoID == "" {
 					videoID = m.contentID
 				}
+
+				// Batch mode: build playlist (one stream per episode)
+				if item.episodeLabel != "" && m.config.PlaylistMode {
+					playlist, startIdx := m.buildPlaylist(item)
+					if len(playlist) > 1 {
+						return m, func() tea.Msg {
+							err := player.PlayWithMPVPlaylist(playlist, startIdx)
+							if err != nil {
+								return mpvErrorMsg{err: err}
+							}
+							return mpvLaunchedMsg{videoID: videoID, videoType: contentType}
+						}
+					}
+				}
+
+				// Single stream fallback
+				url := item.stream.PlayableURL()
 				return m, func() tea.Msg {
 					err := player.PlayWithMPV(url)
 					if err != nil {

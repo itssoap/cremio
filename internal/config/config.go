@@ -14,6 +14,7 @@ type Config struct {
 	Addons          []string `json:"addons"`
 	AutoFocusSearch bool     `json:"auto_focus_search"`
 	SearchAddon     string   `json:"search_addon"`
+	PlaylistMode    bool     `json:"playlist_mode"`
 	path            string
 }
 
