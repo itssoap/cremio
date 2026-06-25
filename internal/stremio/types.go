@@ -1,6 +1,34 @@
 package stremio
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
+
+// FlexString handles JSON values that may be either a string or a number,
+// normalizing them to a string. Some addons (e.g. TVDB) return numeric
+// imdbRating while others (Cinemeta) return a string.
+type FlexString string
+
+func (f *FlexString) UnmarshalJSON(data []byte) error {
+	// Try string first
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*f = FlexString(s)
+		return nil
+	}
+	// Try number
+	var n float64
+	if err := json.Unmarshal(data, &n); err == nil {
+		*f = FlexString(fmt.Sprintf("%.1f", n))
+		return nil
+	}
+	// Null or unrecognized — leave empty
+	*f = ""
+	return nil
+}
+
+func (f FlexString) String() string { return string(f) }
 
 type Manifest struct {
 	ID          string    `json:"id"`
@@ -47,7 +75,7 @@ type MetaPreview struct {
 	PosterShape string `json:"posterShape,omitempty"`
 	Description string `json:"description,omitempty"`
 	ReleaseInfo string `json:"releaseInfo,omitempty"`
-	IMDBRating  string `json:"imdbRating,omitempty"`
+	IMDBRating  FlexString `json:"imdbRating,omitempty"`
 }
 
 type MetaResponse struct {
@@ -55,14 +83,15 @@ type MetaResponse struct {
 }
 
 type Meta struct {
-	ID          string   `json:"id"`
-	Type        string   `json:"type"`
-	Name        string   `json:"name"`
-	Poster      string   `json:"poster,omitempty"`
-	Background  string   `json:"background,omitempty"`
-	Description string   `json:"description,omitempty"`
-	ReleaseInfo string   `json:"releaseInfo,omitempty"`
-	IMDBRating  string   `json:"imdbRating,omitempty"`
+	ID          string     `json:"id"`
+	Type        string     `json:"type"`
+	Name        string     `json:"name"`
+	Poster      string     `json:"poster,omitempty"`
+	Background  string     `json:"background,omitempty"`
+	Description string     `json:"description,omitempty"`
+	ReleaseInfo string     `json:"releaseInfo,omitempty"`
+	IMDBRating  FlexString `json:"imdbRating,omitempty"`
+	IMDBID      string     `json:"imdb_id,omitempty"`
 	Runtime     string   `json:"runtime,omitempty"`
 	Genres      []string `json:"genres,omitempty"`
 	Director    []string `json:"director,omitempty"`
@@ -73,11 +102,20 @@ type Meta struct {
 type Video struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`
+	Name      string `json:"name,omitempty"`
 	Released  string `json:"released,omitempty"`
 	Season    int    `json:"season,omitempty"`
 	Episode   int    `json:"episode,omitempty"`
 	Overview  string `json:"overview,omitempty"`
 	Thumbnail string `json:"thumbnail,omitempty"`
+}
+
+// DisplayTitle returns the video title, preferring Title over Name.
+func (v Video) DisplayTitle() string {
+	if v.Title != "" {
+		return v.Title
+	}
+	return v.Name
 }
 
 type StreamResponse struct {

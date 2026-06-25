@@ -28,12 +28,12 @@ func (v videoItem) Title() string {
 		prefix = "✓ "
 	}
 	if v.video.Season > 0 {
-		return fmt.Sprintf("%sS%02dE%02d - %s", prefix, v.video.Season, v.video.Episode, v.video.Title)
+		return fmt.Sprintf("%sS%02dE%02d - %s", prefix, v.video.Season, v.video.Episode, v.video.DisplayTitle())
 	}
-	return prefix + v.video.Title
+	return prefix + v.video.DisplayTitle()
 }
 func (v videoItem) Description() string { return v.video.Overview }
-func (v videoItem) FilterValue() string { return v.video.Title }
+func (v videoItem) FilterValue() string { return v.video.DisplayTitle() }
 
 type seasonItem struct {
 	season       int
@@ -104,7 +104,13 @@ func (m *DetailModel) historyID() string {
 	if m.requestedID != "" {
 		return m.requestedID
 	}
-	return history.ExtractIMDBID(m.meta.ID)
+	if m.meta != nil && m.meta.IMDBID != "" {
+		return m.meta.IMDBID
+	}
+	if m.meta != nil {
+		return history.ExtractIMDBID(m.meta.ID)
+	}
+	return ""
 }
 
 func (m *DetailModel) showSeasons() {
@@ -205,6 +211,12 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 		m.contentType = msg.meta.Type
 		m.viewingEpisodes = false
 		m.selectedSeason = 0
+
+		// If the meta provides an explicit IMDB ID and our requestedID uses
+		// a different scheme (e.g. tvdb:), update to keep history consistent.
+		if msg.meta.IMDBID != "" && m.requestedID != msg.meta.IMDBID {
+			m.requestedID = msg.meta.IMDBID
+		}
 
 		if msg.meta.Type == "series" && len(msg.meta.Videos) > 0 {
 			m.showSeasons()
@@ -353,7 +365,7 @@ func (m DetailModel) View() string {
 		info = append(info, m.meta.Runtime)
 	}
 	if m.meta.IMDBRating != "" {
-		info = append(info, "⭐ "+m.meta.IMDBRating)
+		info = append(info, "⭐ "+string(m.meta.IMDBRating))
 	}
 	if len(info) > 0 {
 		sections = append(sections, SubtitleStyle.Render(strings.Join(info, " • ")))

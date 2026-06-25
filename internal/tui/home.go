@@ -24,7 +24,7 @@ func (i catalogItem) Description() string {
 		desc += " • " + i.meta.ReleaseInfo
 	}
 	if i.meta.IMDBRating != "" {
-		desc += " • ⭐ " + i.meta.IMDBRating
+		desc += " • ⭐ " + string(i.meta.IMDBRating)
 	}
 	return desc
 }
