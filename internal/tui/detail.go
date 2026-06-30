@@ -253,10 +253,14 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			}
 			// For movies (no videos or single video), go to streams directly
 			if m.meta.Type == "movie" || len(m.meta.Videos) == 0 {
+				metaName := m.meta.Name
+				metaYear := m.meta.ReleaseInfo
 				return m, func() tea.Msg {
 					return NavigateToStreamsMsg{
-						ID:   m.meta.ID,
-						Type: m.meta.Type,
+						ID:       m.meta.ID,
+						Type:     m.meta.Type,
+						MetaName: metaName,
+						MetaYear: metaYear,
 					}
 				}
 			}
@@ -271,10 +275,14 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			}
 			// If viewing episodes, navigate to streams
 			if item, ok := m.list.SelectedItem().(videoItem); ok {
+				metaName := m.meta.Name
+				metaYear := m.meta.ReleaseInfo
 				return m, func() tea.Msg {
 					return NavigateToStreamsMsg{
-						ID:   item.video.ID,
-						Type: m.meta.Type,
+						ID:       item.video.ID,
+						Type:     m.meta.Type,
+						MetaName: metaName,
+						MetaYear: metaYear,
 					}
 				}
 			}
@@ -291,10 +299,14 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 					videos = m.meta.Videos
 				}
 				metaType := m.meta.Type
+				metaName := m.meta.Name
+				metaYear := m.meta.ReleaseInfo
 				return m, func() tea.Msg {
 					return NavigateToAllStreamsMsg{
-						Videos: videos,
-						Type:   metaType,
+						Videos:   videos,
+						Type:     metaType,
+						MetaName: metaName,
+						MetaYear: metaYear,
 					}
 				}
 			}

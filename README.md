@@ -168,6 +168,7 @@ The file uses a simple JSON structure:
 | `esc`      | Go back / unfocus input                     |
 | `w`        | Toggle watched (episode, season, or movie)  |
 | `f`        | Fetch streams for all episodes (series)     |
+| `d`        | Download selected stream / batch download (series) |
 | `a`        | Add a new addon (Addons tab)                |
 | `d`        | Remove selected addon (Addons tab)          |
 | `q`       | Quit                                         |
