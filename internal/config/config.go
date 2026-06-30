@@ -49,7 +49,7 @@ func Load() (*Config, error) {
 
 func (c *Config) Save() error {
 	dir := filepath.Dir(c.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 
@@ -58,7 +58,7 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	return os.WriteFile(c.path, data, 0o644)
+	return os.WriteFile(c.path, data, 0o600)
 }
 
 func (c *Config) AddAddon(url string) {

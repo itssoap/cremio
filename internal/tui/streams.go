@@ -25,10 +25,22 @@ type streamItem struct {
 
 func (s streamItem) Title() string {
 	name := s.stream.DisplayName()
+	if tag := s.typeTag(); tag != "" {
+		name = tag + " " + name
+	}
 	if s.episodeLabel != "" {
 		return s.episodeLabel + " | " + name
 	}
 	return name
+}
+
+// typeTag returns a short prefix flagging streams that plain mpv cannot play
+// on its own (e.g. torrents), so the user isn't surprised by a no-op launch.
+func (s streamItem) typeTag() string {
+	if s.stream.URL == "" && s.stream.InfoHash != "" {
+		return "[torrent]"
+	}
+	return ""
 }
 func (s streamItem) Description() string {
 	if s.stream.Description != "" {
@@ -125,11 +137,13 @@ func (m *StreamsModel) updateListSize() {
 }
 
 func (m StreamsModel) LoadStreams(nav NavigateToStreamsMsg) tea.Cmd {
+	// Snapshot the addon list to avoid racing with config mutations.
+	addons := append([]string(nil), m.config.Addons...)
 	return func() tea.Msg {
 		var allStreams []stremio.Stream
 		ctx := context.Background()
 
-		for _, addonURL := range m.config.Addons {
+		for _, addonURL := range addons {
 			resp, err := m.client.FetchStreams(ctx, addonURL, nav.Type, nav.ID)
 			if err != nil {
 				continue
@@ -145,13 +159,15 @@ func (m StreamsModel) LoadStreams(nav NavigateToStreamsMsg) tea.Cmd {
 }
 
 func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter) tea.Cmd {
+	// Snapshot the addon list to avoid racing with config mutations.
+	addons := append([]string(nil), m.config.Addons...)
 	return func() tea.Msg {
 		var allStreams []labeledStream
 		ctx := context.Background()
 
 		for _, video := range nav.Videos {
 			label := fmt.Sprintf("S%02dE%02d", video.Season, video.Episode)
-			for _, addonURL := range m.config.Addons {
+			for _, addonURL := range addons {
 				resp, err := m.client.FetchStreams(ctx, addonURL, nav.Type, video.ID)
 				if err != nil {
 					continue
