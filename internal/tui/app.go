@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"context"
+	"fmt"
+	"time"
+
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -30,6 +34,7 @@ type App struct {
 	client  *stremio.Client
 	config  *config.Config
 	history *history.WatchHistory
+	dlMgr   *player.DownloadManager
 
 	home       HomeModel
 	search     SearchModel
@@ -37,23 +42,34 @@ type App struct {
 	historyTab HistoryModel
 	detail     DetailModel
 	streams    StreamsModel
+	downloads  DownloadsModel
 }
 
 func NewApp(cfg *config.Config, hist *history.WatchHistory) App {
 	client := stremio.NewClient()
 	detail := NewDetailModel(client, cfg)
 	detail.history = hist
+
+	parallel := cfg.DownloadParallel
+	if parallel < 1 {
+		parallel = 1
+	}
+	useAria2c := cfg.DownloadAria2c == nil || *cfg.DownloadAria2c
+	dlMgr := player.NewDownloadManager(parallel, useAria2c)
+
 	return App{
 		screen:     ScreenHome,
 		client:     client,
 		config:     cfg,
 		history:    hist,
+		dlMgr:      dlMgr,
 		home:       NewHomeModel(client, cfg),
 		search:     NewSearchModel(client, cfg),
 		addons:     NewAddonsModel(client, cfg),
 		historyTab: NewHistoryModel(hist, client, cfg),
 		detail:     detail,
 		streams:    NewStreamsModel(client, cfg),
+		downloads:  NewDownloadsModel(dlMgr),
 	}
 }
 
@@ -73,11 +89,27 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.historyTab.SetSize(msg.Width-4, contentHeight)
 		a.detail.SetSize(msg.Width-4, contentHeight)
 		a.streams.SetSize(msg.Width-4, contentHeight)
+		a.downloads.SetSize(msg.Width-4, contentHeight)
 		return a, nil
 
 	case tea.KeyMsg:
+		// Global: toggle downloads popup
+		if msg.String() == "D" && !a.isTyping() {
+			a.downloads.Toggle()
+			return a, nil
+		}
+		// Route all keys to downloads popup when visible
+		if a.downloads.IsVisible() {
+			var cmd tea.Cmd
+			a.downloads, cmd = a.downloads.Update(msg)
+			return a, cmd
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
+			if a.downloads.IsVisible() {
+				break
+			}
 			if a.screen == ScreenAddons && a.addons.inputActive {
 				break
 			}
@@ -192,6 +224,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.streams.contentType = msg.Type
 		a.streams.metaName = msg.MetaName
 		a.streams.metaYear = msg.MetaYear
+		a.streams.downloadMode = msg.DownloadMode
 		a.streams.filterInput.SetValue("")
 		a.streams.filterActive = true
 		a.streams.list.SetItems(nil)
@@ -249,13 +282,34 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.search, _ = a.search.Update(msg)
 		return a, nil
 
-	case player.BatchDownloadResult:
-		a.streams, _ = a.streams.Update(msg)
-		return a, nil
+	case enqueueDownloadsMsg:
+		// Batch download: enqueue selected episodes from chosen release group
+		downloadDir := a.config.DownloadDir
+		if downloadDir == "" {
+			downloadDir = "."
+		}
+		count := a.streams.enqueueBatchDownload(a.dlMgr, a.streams.rgSelectedGroup, downloadDir)
+		a.streams.downloadMsg = fmt.Sprintf("⬇ Queued %d episodes (press D to view downloads)", count)
+		a.streams.resetDownloadState()
+		a.streams.downloadMsg = fmt.Sprintf("⬇ Queued %d episodes (press D to view downloads)", count)
+		return a, a.processDownloadQueue()
 
-	case player.DownloadResult:
-		a.streams, _ = a.streams.Update(msg)
-		return a, nil
+	case enqueueSingleDownloadMsg:
+		downloadDir := a.config.DownloadDir
+		if downloadDir == "" {
+			downloadDir = "."
+		}
+		a.streams.enqueueSingleDownload(a.dlMgr, msg.item, downloadDir)
+		a.streams.downloadMsg = "⬇ Queued download (press D to view)"
+		return a, a.processDownloadQueue()
+
+	case downloadTickMsg:
+		// Process next queued job if capacity available
+		return a, a.processDownloadQueue()
+
+	case downloadJobDoneMsg:
+		// Job finished, try processing next
+		return a, a.processDownloadQueue()
 	}
 
 	var cmd tea.Cmd
@@ -302,7 +356,21 @@ func (a App) View() string {
 	case ScreenStreams:
 		content = a.streams.View()
 	}
-	return AppStyle.Render(lipgloss.JoinVertical(lipgloss.Left, tabs, content))
+
+	// Download indicator in status
+	dlStatus := ""
+	if a.dlMgr.ActiveCount() > 0 || a.dlMgr.QueuedCount() > 0 {
+		dlStatus = fmt.Sprintf(" [⬇ %d active, %d queued]", a.dlMgr.ActiveCount(), a.dlMgr.QueuedCount())
+	}
+
+	view := AppStyle.Render(lipgloss.JoinVertical(lipgloss.Left, tabs+dlStatus, content))
+
+	// Overlay downloads popup
+	if a.downloads.IsVisible() {
+		view += "\n" + a.downloads.View()
+	}
+
+	return view
 }
 
 func (a App) hasHistory() bool {
@@ -334,6 +402,38 @@ func (a App) listFiltering() bool {
 		return a.historyTab.list.FilterState() == list.Filtering
 	}
 	return false
+}
+
+// isTyping returns true if any text input is currently focused.
+func (a App) isTyping() bool {
+	if a.screen == ScreenAddons && a.addons.inputActive {
+		return true
+	}
+	if a.screen == ScreenSearch && a.search.inputFocused {
+		return true
+	}
+	if a.screen == ScreenStreams && a.streams.filterActive {
+		return true
+	}
+	return a.listFiltering()
+}
+
+// processDownloadQueue starts processing the next download job if capacity allows.
+func (a App) processDownloadQueue() tea.Cmd {
+	if a.dlMgr.QueuedCount() == 0 && a.dlMgr.ActiveCount() == 0 {
+		return nil
+	}
+	if a.dlMgr.QueuedCount() == 0 {
+		// Active downloads running; schedule a tick to refresh UI
+		return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+			return downloadTickMsg{}
+		})
+	}
+	mgr := a.dlMgr
+	return func() tea.Msg {
+		_, _ = mgr.ProcessQueue(context.Background())
+		return downloadJobDoneMsg{}
+	}
 }
 
 func (a App) renderTabs() string {
@@ -373,10 +473,11 @@ type NavigateToStreamsMsg struct {
 }
 
 type NavigateToAllStreamsMsg struct {
-	Videos   []stremio.Video
-	Type     string
-	MetaName string
-	MetaYear string
+	Videos       []stremio.Video
+	Type         string
+	MetaName     string
+	MetaYear     string
+	DownloadMode bool
 }
 
 type AddonAddedMsg struct{}

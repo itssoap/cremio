@@ -71,6 +71,7 @@ type StreamsModel struct {
 	contentType   string
 	metaName      string
 	metaYear      string
+	downloadMode  bool // when true, auto-show release group selector after streams load
 	filterActive  bool
 	infoMode      bool
 	loading       bool
@@ -83,17 +84,20 @@ type StreamsModel struct {
 	height        int
 
 	// Download state
-	downloading    bool
-	downloadMsg    string
-	downloadResults []player.DownloadResult
+	downloadMsg     string
 
-	// Release group selector (batch download)
-	rgSelectorActive  bool
-	rgItems           []string           // available release groups
-	rgCursor          int
-	rgEpisodes        []episodeSelection // episodes for batch download
+	// Release group selector (batch download: groups first)
+	rgSelectorActive bool
+	rgGroups         []releaseGroupInfo
+	rgCursor         int
+	rgScroll         int
+
+	// Episode selector (after group chosen)
 	rgEpSelectorActive bool
+	rgEpisodes         []episodeSelection
 	rgEpCursor         int
+	rgEpScroll         int
+	rgSelectedGroup    string
 }
 
 type streamsLoadedMsg struct {
@@ -111,24 +115,46 @@ type mpvErrorMsg struct {
 }
 type clearLaunchedMsg struct{ seq int }
 
+// Messages for download flow (handled by app.go which owns the manager).
+type enqueueDownloadsMsg struct{}
+type enqueueSingleDownloadMsg struct{ item streamItem }
+
 type episodeSelection struct {
 	label    string // e.g. "S01E05"
 	season   int
 	episode  int
 	epTitle  string
+	size     string // parsed size display
+	sizeBytes int64
 	selected bool
 }
 
+type releaseGroupInfo struct {
+	name       string
+	resolution string
+	epCount    int
+	totalSize  int64
+}
+
 func (m *StreamsModel) resetDownloadState() {
-	m.downloading = false
 	m.downloadMsg = ""
-	m.downloadResults = nil
 	m.rgSelectorActive = false
-	m.rgItems = nil
+	m.rgGroups = nil
 	m.rgCursor = 0
+	m.rgScroll = 0
 	m.rgEpisodes = nil
 	m.rgEpSelectorActive = false
 	m.rgEpCursor = 0
+	m.rgEpScroll = 0
+	m.rgSelectedGroup = ""
+}
+
+func (m *StreamsModel) popupVisibleRows() int {
+	rows := m.height - 8
+	if rows < 5 {
+		rows = 5
+	}
+	return rows
 }
 
 func NewStreamsModel(client *stremio.Client, cfg *config.Config) StreamsModel {
@@ -290,34 +316,81 @@ func (m *StreamsModel) isBatchMode() bool {
 	return false
 }
 
-// collectReleaseGroups extracts unique release groups from visible stream items.
-func (m *StreamsModel) collectReleaseGroups() []string {
-	seen := make(map[string]bool)
-	var groups []string
+// collectReleaseGroups extracts unique release groups with metadata from visible streams.
+func (m *StreamsModel) collectReleaseGroups() []releaseGroupInfo {
+	type groupData struct {
+		resolution string
+		episodes   map[string]bool
+		totalSize  int64
+	}
+	groups := make(map[string]*groupData)
+	var order []string
+
 	for _, li := range m.list.Items() {
 		si, ok := li.(streamItem)
 		if !ok {
 			continue
 		}
 		group := player.ExtractReleaseGroup(si.stream.Name)
-		if !seen[group] {
-			seen[group] = true
-			groups = append(groups, group)
+		gd, exists := groups[group]
+		if !exists {
+			gd = &groupData{episodes: make(map[string]bool)}
+			groups[group] = gd
+			order = append(order, group)
+		}
+		if si.episodeLabel != "" && !gd.episodes[si.episodeLabel] {
+			gd.episodes[si.episodeLabel] = true
+			sizeBytes, _ := player.ParseSize(si.stream.Name, si.stream.Title)
+			gd.totalSize += sizeBytes
+		}
+		if gd.resolution == "" {
+			gd.resolution = player.ParseResolution(si.stream.Name, si.stream.Title)
 		}
 	}
-	return groups
+
+	var result []releaseGroupInfo
+	for _, name := range order {
+		gd := groups[name]
+		result = append(result, releaseGroupInfo{
+			name:       name,
+			resolution: gd.resolution,
+			epCount:    len(gd.episodes),
+			totalSize:  gd.totalSize,
+		})
+	}
+	return result
 }
 
-// collectEpisodesForSelection builds the episode selector from pending videos.
-func (m *StreamsModel) collectEpisodesForSelection() []episodeSelection {
+// collectEpisodesForGroup builds the episode selector for a specific release group.
+func (m *StreamsModel) collectEpisodesForGroup(group string) []episodeSelection {
+	seen := make(map[string]bool)
 	var eps []episodeSelection
-	for _, v := range m.pendingVideos {
+
+	for _, li := range m.list.Items() {
+		si, ok := li.(streamItem)
+		if !ok || si.episodeLabel == "" || seen[si.episodeLabel] {
+			continue
+		}
+		g := player.ExtractReleaseGroup(si.stream.Name)
+		if g != group {
+			continue
+		}
+		url := si.stream.PlayableURL()
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			continue
+		}
+		seen[si.episodeLabel] = true
+		sizeBytes, sizeDisplay := player.ParseSize(si.stream.Name, si.stream.Title)
+		// Parse season/episode from video ID
+		season, episode := history.ParseEpisodeID(si.videoID)
 		eps = append(eps, episodeSelection{
-			label:    fmt.Sprintf("S%02dE%02d", v.Season, v.Episode),
-			season:   v.Season,
-			episode:  v.Episode,
-			epTitle:  v.DisplayTitle(),
-			selected: true,
+			label:     si.episodeLabel,
+			season:    season,
+			episode:   episode,
+			epTitle:   "", // We don't have episode title here
+			size:      sizeDisplay,
+			sizeBytes: sizeBytes,
+			selected:  true,
 		})
 	}
 	return eps
@@ -342,103 +415,42 @@ func (m *StreamsModel) streamForGroupAndEpisode(group, label string) *streamItem
 	return nil
 }
 
-// downloadSingle downloads a single stream (movie or single episode).
-func (m *StreamsModel) downloadSingle(item streamItem) tea.Cmd {
-	url := item.stream.PlayableURL()
-	metaName := m.metaName
-	metaYear := m.metaYear
-	contentType := m.contentType
-	videoID := item.videoID
-	if videoID == "" {
-		videoID = m.contentID
-	}
-
-	return func() tea.Msg {
-		downloadDir := "."
-		ext := player.GuessExtension(url)
-
-		var destPath string
-		if contentType == "movie" {
-			destPath = player.PlexMoviePath(downloadDir, metaName, metaYear, ext)
-		} else {
-			season, episode := history.ParseEpisodeID(videoID)
-			destPath = player.PlexEpisodePath(downloadDir, metaName, metaYear, season, episode, "", ext)
-		}
-
-		start := time.Now()
-		result, err := player.DownloadHTTP(context.Background(), url, destPath)
-		dr := player.DownloadResult{
-			Label:    metaName,
-			Path:     destPath,
-			Duration: time.Since(start),
-		}
-		if err != nil {
-			dr.Err = err
-		} else if result.Skipped {
-			dr.Skipped = true
-			dr.SkipMsg = result.SkipReason
-		}
-		return dr
-	}
-}
-
-// downloadBatchByGroup downloads all selected episodes from a release group.
-func (m *StreamsModel) downloadBatchByGroup(group string) tea.Cmd {
-	metaName := m.metaName
-	metaYear := m.metaYear
-
-	type dlJob struct {
-		url     string
-		path    string
-		label   string
-		season  int
-		episode int
-	}
-
-	var jobs []dlJob
-	var skipped []player.DownloadResult
-
+// enqueueBatchDownload enqueues selected episodes from a release group into the download manager.
+func (m *StreamsModel) enqueueBatchDownload(mgr *player.DownloadManager, group string, downloadDir string) int {
+	count := 0
 	for _, ep := range m.rgEpisodes {
 		if !ep.selected {
 			continue
 		}
 		si := m.streamForGroupAndEpisode(group, ep.label)
 		if si == nil {
-			skipped = append(skipped, player.DownloadResult{
-				Label:   ep.label,
-				Skipped: true,
-				SkipMsg: fmt.Sprintf("not available from %s", group),
-			})
 			continue
 		}
 		url := si.stream.PlayableURL()
 		ext := player.GuessExtension(url)
-		destPath := player.PlexEpisodePath(".", metaName, metaYear, ep.season, ep.episode, ep.epTitle, ext)
-		jobs = append(jobs, dlJob{url: url, path: destPath, label: ep.label, season: ep.season, episode: ep.episode})
+		destPath := player.PlexEpisodePath(downloadDir, m.metaName, m.metaYear, ep.season, ep.episode, ep.epTitle, ext)
+		mgr.Enqueue(ep.label, url, destPath)
+		count++
 	}
+	return count
+}
 
-	return func() tea.Msg {
-		var results []player.DownloadResult
-		results = append(results, skipped...)
-
-		for _, job := range jobs {
-			start := time.Now()
-			result, err := player.DownloadHTTP(context.Background(), job.url, job.path)
-			dr := player.DownloadResult{
-				Label:    job.label,
-				Path:     job.path,
-				Duration: time.Since(start),
-			}
-			if err != nil {
-				dr.Err = err
-			} else if result.Skipped {
-				dr.Skipped = true
-				dr.SkipMsg = result.SkipReason
-			}
-			results = append(results, dr)
+// enqueueSingleDownload enqueues a single stream download.
+func (m *StreamsModel) enqueueSingleDownload(mgr *player.DownloadManager, item streamItem, downloadDir string) {
+	url := item.stream.PlayableURL()
+	ext := player.GuessExtension(url)
+	var destPath string
+	if m.contentType == "movie" {
+		destPath = player.PlexMoviePath(downloadDir, m.metaName, m.metaYear, ext)
+	} else {
+		videoID := item.videoID
+		if videoID == "" {
+			videoID = m.contentID
 		}
-		return player.BatchDownloadResult{Results: results}
+		season, episode := history.ParseEpisodeID(videoID)
+		destPath = player.PlexEpisodePath(downloadDir, m.metaName, m.metaYear, season, episode, "", ext)
 	}
+	mgr.Enqueue(m.metaName, url, destPath)
 }
 
 func (m StreamsModel) Update(msg tea.Msg) (StreamsModel, tea.Cmd) {
@@ -467,6 +479,16 @@ func (m StreamsModel) Update(msg tea.Msg) (StreamsModel, tea.Cmd) {
 			m.allItems[i] = streamItem{stream: ls.stream, episodeLabel: ls.label, videoID: ls.videoID}
 		}
 		m.applyFilter()
+		// In download mode, auto-open release group selector
+		if m.downloadMode {
+			m.downloadMode = false
+			m.rgGroups = m.collectReleaseGroups()
+			if len(m.rgGroups) > 0 {
+				m.rgCursor = 0
+				m.rgScroll = 0
+				m.rgSelectorActive = true
+			}
+		}
 		return m, nil
 
 	case streamsErrorMsg:
@@ -495,81 +517,77 @@ func (m StreamsModel) Update(msg tea.Msg) (StreamsModel, tea.Cmd) {
 		}
 		return m, nil
 
-	case player.DownloadResult:
-		m.downloading = false
-		if msg.Err != nil {
-			m.downloadMsg = fmt.Sprintf("✗ Download failed: %v", msg.Err)
-		} else if msg.Skipped {
-			m.downloadMsg = fmt.Sprintf("⊘ Skipped: %s", msg.SkipMsg)
-		} else {
-			m.downloadMsg = fmt.Sprintf("✓ Downloaded to %s (%s)", msg.Path, msg.Duration.Round(time.Second))
-		}
-		return m, nil
-
-	case player.BatchDownloadResult:
-		m.downloading = false
-		m.downloadResults = msg.Results
-		var ok, skip, fail int
-		for _, r := range msg.Results {
-			switch {
-			case r.Err != nil:
-				fail++
-			case r.Skipped:
-				skip++
-			default:
-				ok++
-			}
-		}
-		m.downloadMsg = fmt.Sprintf("Batch done: %d downloaded, %d skipped, %d failed", ok, skip, fail)
-		return m, nil
-
 	case tea.KeyMsg:
-		// Episode selector popup
+		// Episode selector popup (shown AFTER group selection)
 		if m.rgEpSelectorActive {
+			visible := m.popupVisibleRows()
 			switch msg.String() {
 			case "up", "k":
 				if m.rgEpCursor > 0 {
 					m.rgEpCursor--
+					if m.rgEpCursor < m.rgEpScroll {
+						m.rgEpScroll = m.rgEpCursor
+					}
 				}
 			case "down", "j":
 				if m.rgEpCursor < len(m.rgEpisodes)-1 {
 					m.rgEpCursor++
+					if m.rgEpCursor >= m.rgEpScroll+visible {
+						m.rgEpScroll = m.rgEpCursor - visible + 1
+					}
 				}
 			case " ":
 				m.rgEpisodes[m.rgEpCursor].selected = !m.rgEpisodes[m.rgEpCursor].selected
+			case "a":
+				for i := range m.rgEpisodes {
+					m.rgEpisodes[i].selected = true
+				}
+			case "n":
+				for i := range m.rgEpisodes {
+					m.rgEpisodes[i].selected = false
+				}
 			case "enter":
-				// Move to release group selector
+				// Enqueue downloads — handled by app.go which has access to manager
 				m.rgEpSelectorActive = false
-				m.rgItems = m.collectReleaseGroups()
-				m.rgCursor = 0
-				m.rgSelectorActive = true
+				return m, func() tea.Msg { return enqueueDownloadsMsg{} }
 			case "esc":
+				// Go back to group selector
 				m.rgEpSelectorActive = false
-				m.rgEpisodes = nil
+				m.rgSelectorActive = true
 			}
 			return m, nil
 		}
 
-		// Release group selector popup
+		// Release group selector popup (shown FIRST)
 		if m.rgSelectorActive {
+			visible := m.popupVisibleRows()
 			switch msg.String() {
 			case "up", "k":
 				if m.rgCursor > 0 {
 					m.rgCursor--
+					if m.rgCursor < m.rgScroll {
+						m.rgScroll = m.rgCursor
+					}
 				}
 			case "down", "j":
-				if m.rgCursor < len(m.rgItems)-1 {
+				if m.rgCursor < len(m.rgGroups)-1 {
 					m.rgCursor++
+					if m.rgCursor >= m.rgScroll+visible {
+						m.rgScroll = m.rgCursor - visible + 1
+					}
 				}
 			case "enter":
-				group := m.rgItems[m.rgCursor]
+				group := m.rgGroups[m.rgCursor].name
+				m.rgSelectedGroup = group
 				m.rgSelectorActive = false
-				m.downloading = true
-				m.downloadMsg = fmt.Sprintf("Downloading from %s...", group)
-				return m, m.downloadBatchByGroup(group)
+				// Build episode list for chosen group
+				m.rgEpisodes = m.collectEpisodesForGroup(group)
+				m.rgEpCursor = 0
+				m.rgEpScroll = 0
+				m.rgEpSelectorActive = true
 			case "esc":
 				m.rgSelectorActive = false
-				m.rgItems = nil
+				m.rgGroups = nil
 			}
 			return m, nil
 		}
@@ -615,30 +633,29 @@ func (m StreamsModel) Update(msg tea.Msg) (StreamsModel, tea.Cmd) {
 			m.applyFilter()
 			return m, nil
 		case "d":
-			if m.downloading {
-				return m, nil
-			}
 			if m.isBatchMode() {
-				// Batch mode: show episode selector popup
-				if len(m.pendingVideos) == 0 {
-					m.downloadMsg = "Download not available — apply a filter first (f from season view)"
+				// Batch mode: show release group selector first
+				m.rgGroups = m.collectReleaseGroups()
+				if len(m.rgGroups) == 0 {
+					m.downloadMsg = "No downloadable streams (HTTP/HTTPS only)"
 					return m, nil
 				}
-				m.rgEpisodes = m.collectEpisodesForSelection()
-				m.rgEpCursor = 0
-				m.rgEpSelectorActive = true
+				m.rgCursor = 0
+				m.rgScroll = 0
+				m.rgSelectorActive = true
 				return m, nil
 			}
-			// Single stream: download directly
+			// Single stream: enqueue directly
 			if item, ok := m.list.SelectedItem().(streamItem); ok {
 				url := item.stream.PlayableURL()
 				if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 					m.downloadMsg = "Only HTTP/HTTPS streams can be downloaded"
 					return m, nil
 				}
-				m.downloading = true
-				m.downloadMsg = "Downloading..."
-				return m, m.downloadSingle(item)
+				// Signal app to enqueue single download
+				return m, func() tea.Msg {
+					return enqueueSingleDownloadMsg{item: item}
+				}
 			}
 		case "enter":
 			if m.launching {
@@ -766,26 +783,11 @@ func (m StreamsModel) View() string {
 	} else if m.launched {
 		view += "\n" + SubtitleStyle.Render("▶ Launched")
 	}
-	if m.downloading {
-		view += "\n" + SubtitleStyle.Render("⬇ " + m.downloadMsg)
-	} else if m.downloadMsg != "" {
+	if m.downloadMsg != "" {
 		view += "\n" + SubtitleStyle.Render(m.downloadMsg)
 	}
 	if m.playErr != nil {
 		view += "\n" + ErrorStyle.Render(fmt.Sprintf("MPV error: %v", m.playErr))
-	}
-	// Show batch download details
-	if len(m.downloadResults) > 0 {
-		for _, r := range m.downloadResults {
-			switch {
-			case r.Err != nil:
-				view += "\n" + ErrorStyle.Render(fmt.Sprintf("  ✗ %s: %v", r.Label, r.Err))
-			case r.Skipped:
-				view += "\n" + HelpStyle.Render(fmt.Sprintf("  ⊘ %s: %s", r.Label, r.SkipMsg))
-			default:
-				view += "\n" + SubtitleStyle.Render(fmt.Sprintf("  ✓ %s → %s", r.Label, r.Path))
-			}
-		}
 	}
 	sections = append(sections, view)
 	if m.infoMode {
@@ -797,10 +799,17 @@ func (m StreamsModel) View() string {
 
 func (m StreamsModel) episodeSelectorView() string {
 	var b strings.Builder
-	b.WriteString(TitleStyle.Render("Select episodes to download"))
+	b.WriteString(TitleStyle.Render(fmt.Sprintf("Episodes from %s", m.rgSelectedGroup)))
 	b.WriteString("\n\n")
 
-	for i, ep := range m.rgEpisodes {
+	visible := m.popupVisibleRows()
+	end := m.rgEpScroll + visible
+	if end > len(m.rgEpisodes) {
+		end = len(m.rgEpisodes)
+	}
+
+	for i := m.rgEpScroll; i < end; i++ {
+		ep := m.rgEpisodes[i]
 		cursor := "  "
 		if i == m.rgEpCursor {
 			cursor = "▶ "
@@ -809,7 +818,11 @@ func (m StreamsModel) episodeSelectorView() string {
 		if ep.selected {
 			check = "☑"
 		}
-		line := fmt.Sprintf("%s%s %s - %s", cursor, check, ep.label, ep.epTitle)
+		size := ""
+		if ep.size != "" {
+			size = fmt.Sprintf("  (%s)", ep.size)
+		}
+		line := fmt.Sprintf("%s%s %s%s", cursor, check, ep.label, size)
 		if i == m.rgEpCursor {
 			b.WriteString(SubtitleStyle.Render(line))
 		} else {
@@ -818,8 +831,13 @@ func (m StreamsModel) episodeSelectorView() string {
 		b.WriteString("\n")
 	}
 
+	if len(m.rgEpisodes) > visible {
+		b.WriteString(HelpStyle.Render(fmt.Sprintf("  (%d/%d)", m.rgEpCursor+1, len(m.rgEpisodes))))
+		b.WriteString("\n")
+	}
+
 	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("space: toggle • enter: confirm • esc: cancel"))
+	b.WriteString(HelpStyle.Render("space: toggle • a: all • n: none • enter: download • esc: back"))
 	return b.String()
 }
 
@@ -828,25 +846,27 @@ func (m StreamsModel) releaseGroupSelectorView() string {
 	b.WriteString(TitleStyle.Render("Select release group"))
 	b.WriteString("\n\n")
 
-	for i, group := range m.rgItems {
+	visible := m.popupVisibleRows()
+	end := m.rgScroll + visible
+	if end > len(m.rgGroups) {
+		end = len(m.rgGroups)
+	}
+
+	for i := m.rgScroll; i < end; i++ {
+		g := m.rgGroups[i]
 		cursor := "  "
 		if i == m.rgCursor {
 			cursor = "▶ "
 		}
-		// Count how many selected episodes have streams from this group
-		avail := 0
-		for _, ep := range m.rgEpisodes {
-			if ep.selected && m.streamForGroupAndEpisode(group, ep.label) != nil {
-				avail++
-			}
+		res := g.resolution
+		if res == "" {
+			res = "?"
 		}
-		selected := 0
-		for _, ep := range m.rgEpisodes {
-			if ep.selected {
-				selected++
-			}
+		size := ""
+		if g.totalSize > 0 {
+			size = fmt.Sprintf(" │ ~%s", player.FormatBytes(g.totalSize))
 		}
-		line := fmt.Sprintf("%s%s (%d/%d episodes available)", cursor, group, avail, selected)
+		line := fmt.Sprintf("%s%-20s %6s │ %d eps%s", cursor, g.name, res, g.epCount, size)
 		if i == m.rgCursor {
 			b.WriteString(SubtitleStyle.Render(line))
 		} else {
@@ -855,7 +875,12 @@ func (m StreamsModel) releaseGroupSelectorView() string {
 		b.WriteString("\n")
 	}
 
+	if len(m.rgGroups) > visible {
+		b.WriteString(HelpStyle.Render(fmt.Sprintf("  (%d/%d)", m.rgCursor+1, len(m.rgGroups))))
+		b.WriteString("\n")
+	}
+
 	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("enter: download from group • esc: cancel"))
+	b.WriteString(HelpStyle.Render("enter: select group • esc: cancel"))
 	return b.String()
 }
