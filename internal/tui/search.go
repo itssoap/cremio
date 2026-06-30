@@ -371,7 +371,7 @@ func (m SearchModel) View() string {
 	if m.addonName != "" {
 		via = m.addonName
 	}
-	help := HelpStyle.Render(fmt.Sprintf("/ focus search • enter submit • esc unfocus • s: search addon  via: %s", via))
+	help := HelpStyle.Render(fmt.Sprintf("/: focus search • enter: submit • esc: unfocus • s: search addon • D: downloads • q: quit  via: %s", via))
 	sections = append(sections, help)
 
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)

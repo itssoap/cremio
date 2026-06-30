@@ -773,7 +773,7 @@ func (m StreamsModel) View() string {
 	// If waiting for filter input in batch mode, show hint
 	if len(m.pendingVideos) > 0 && len(m.allItems) == 0 {
 		sections = append(sections, HelpStyle.Render("Type a filter and press enter to search all episodes"))
-		sections = append(sections, HelpStyle.Render("/ filter • i: info • esc: back • q: quit"))
+		sections = append(sections, HelpStyle.Render("/: filter • enter: search • esc: back • q: quit"))
 		return lipgloss.JoinVertical(lipgloss.Left, sections...)
 	}
 
@@ -793,7 +793,7 @@ func (m StreamsModel) View() string {
 	if m.infoMode {
 		sections = append(sections, m.infoPanel())
 	}
-	sections = append(sections, HelpStyle.Render("/ filter • c clear • d: download • i: info • enter: play • esc: back • q: quit"))
+	sections = append(sections, HelpStyle.Render("/: filter • c: clear • d: download • i: info • D: downloads • enter: play • esc: back • q: quit"))
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
