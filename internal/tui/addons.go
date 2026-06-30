@@ -45,6 +45,7 @@ type AddonsModel struct {
 	config      *config.Config
 	inputActive bool
 	err         error
+	warn        string
 	saveErr     error
 	width       int
 	height      int
@@ -155,6 +156,11 @@ func (m AddonsModel) Update(msg tea.Msg) (AddonsModel, tea.Cmd) {
 			m.saveErr = nil
 		}
 		m.err = nil
+		if strings.HasPrefix(msg.url, "http://") {
+			m.warn = "Added over plaintext http:// — traffic to this addon is unencrypted."
+		} else {
+			m.warn = ""
+		}
 		m.refreshList()
 		return m, tea.Batch(m.loadManifests(), func() tea.Msg { return AddonAddedMsg{} })
 
@@ -185,11 +191,12 @@ func (m AddonsModel) Update(msg tea.Msg) (AddonsModel, tea.Cmd) {
 			case "a":
 				m.inputActive = true
 				m.err = nil
+				m.warn = ""
 				return m, m.input.Focus()
 			case "d", "delete":
 				if item, ok := m.list.SelectedItem().(addonItem); ok {
 					if item.url == config.CinemetaURL {
-						m.err = fmt.Errorf("Cinemeta is required for title resolution and cannot be removed")
+						m.err = fmt.Errorf("cinemeta is required for title resolution and cannot be removed")
 						return m, nil
 					}
 					m.config.RemoveAddon(item.url)
@@ -228,6 +235,9 @@ func (m AddonsModel) View() string {
 		sections = append(sections, m.list.View())
 		if m.err != nil {
 			sections = append(sections, ErrorStyle.Render(m.err.Error()))
+		}
+		if m.warn != "" {
+			sections = append(sections, SubtitleStyle.Render("⚠ "+m.warn))
 		}
 		if m.saveErr != nil {
 			sections = append(sections, ErrorStyle.Render(fmt.Sprintf("⚠ Could not save config: %v", m.saveErr)))

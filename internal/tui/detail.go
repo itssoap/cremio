@@ -153,13 +153,18 @@ func (m *DetailModel) showEpisodesForSeason(season int) {
 }
 
 func (m DetailModel) LoadMeta(nav NavigateToDetailMsg) tea.Cmd {
+	// Snapshot the addon list to avoid racing with config mutations.
+	configAddons := append([]string(nil), m.config.Addons...)
 	return func() tea.Msg {
 		ctx := context.Background()
 
 		// Try the source addon first, then all others
 		tried := make(map[string]bool)
-		addons := []string{nav.BaseURL}
-		for _, u := range m.config.Addons {
+		var addons []string
+		if nav.BaseURL != "" {
+			addons = append(addons, nav.BaseURL)
+		}
+		for _, u := range configAddons {
 			if u != nav.BaseURL {
 				addons = append(addons, u)
 			}

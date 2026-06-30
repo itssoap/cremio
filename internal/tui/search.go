@@ -188,8 +188,25 @@ func (m SearchModel) search(query string) tea.Cmd {
 		if len(allItems) == 0 {
 			return searchErrorMsg{err: fmt.Errorf("no results found")}
 		}
-		return searchResultsMsg{items: allItems}
+		return searchResultsMsg{items: dedupeByID(allItems)}
 	}
+}
+
+// dedupeByID removes duplicate results that share the same meta ID (the same
+// title can appear in several of an addon's catalogs), preserving order.
+func dedupeByID(items []catalogItem) []catalogItem {
+	seen := make(map[string]bool, len(items))
+	out := items[:0]
+	for _, it := range items {
+		if it.meta.ID != "" {
+			if seen[it.meta.ID] {
+				continue
+			}
+			seen[it.meta.ID] = true
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 func (m SearchModel) Update(msg tea.Msg) (SearchModel, tea.Cmd) {
