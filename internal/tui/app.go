@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/itssoap/cremio/internal/config"
@@ -85,6 +86,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.screen == ScreenStreams && a.streams.filterActive {
 				break
 			}
+			// Don't treat "q" as quit while typing in a list's built-in filter.
+			if msg.String() == "q" && a.listFiltering() {
+				break
+			}
 			return a, tea.Quit
 		case "esc", "escape":
 			if a.screen == ScreenStreams && a.streams.filterActive {
@@ -102,6 +107,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 		case "tab":
+			// Don't switch tabs while typing in a list's built-in filter.
+			if a.listFiltering() {
+				break
+			}
 			if a.screen == ScreenDetail || a.screen == ScreenStreams {
 				// Allow tab to escape back from error states
 				if (a.screen == ScreenDetail && a.detail.err != nil) || (a.screen == ScreenStreams && a.streams.err != nil) {
@@ -183,15 +192,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.streams.filterInput.Focus()
 
 	case AddonAddedMsg:
-		// Refresh home catalogs when addon is added
-		a.home = NewHomeModel(a.client, a.config)
-		a.search = NewSearchModel(a.client, a.config)
-		return a, nil
+		// Rebuild home/search so they pick up the new addon, then reload.
+		return a, a.rebuildAddonViews()
 
 	case AddonRemovedMsg:
-		a.home = NewHomeModel(a.client, a.config)
-		a.search = NewSearchModel(a.client, a.config)
-		return a, nil
+		return a, a.rebuildAddonViews()
 
 	case mpvLaunchedMsg:
 		if a.history != nil && msg.videoID != "" {
@@ -287,6 +292,33 @@ func (a App) View() string {
 
 func (a App) hasHistory() bool {
 	return a.history != nil && (len(a.history.Movies) > 0 || len(a.history.Shows) > 0)
+}
+
+// rebuildAddonViews recreates the Home and Search models so they reflect the
+// current addon list, restores their size, and returns the commands that
+// trigger their initial reload (catalog fetch / search-addon name lookup).
+func (a *App) rebuildAddonViews() tea.Cmd {
+	a.home = NewHomeModel(a.client, a.config)
+	a.search = NewSearchModel(a.client, a.config)
+	if a.width > 0 && a.height > 0 {
+		contentHeight := a.height - 4
+		a.home.SetSize(a.width-4, contentHeight)
+		a.search.SetSize(a.width-4, contentHeight)
+	}
+	return tea.Batch(a.home.Init(), a.search.Init())
+}
+
+// listFiltering reports whether the active tab's list is currently capturing
+// keystrokes for its built-in filter, so global keys like "q"/"tab" should be
+// passed through to the list instead of being handled at the app level.
+func (a App) listFiltering() bool {
+	switch a.screen {
+	case ScreenHome:
+		return a.home.list.FilterState() == list.Filtering
+	case ScreenHistory:
+		return a.historyTab.list.FilterState() == list.Filtering
+	}
+	return false
 }
 
 func (a App) renderTabs() string {

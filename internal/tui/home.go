@@ -79,11 +79,14 @@ func (m *HomeModel) SetSize(w, h int) {
 }
 
 func (m HomeModel) loadCatalogs() tea.Cmd {
+	// Snapshot the addon list so the goroutine doesn't race with the main
+	// loop mutating config.Addons (e.g. on addon add/remove).
+	addons := append([]string(nil), m.config.Addons...)
 	return func() tea.Msg {
 		var allItems []catalogItem
 		ctx := context.Background()
 
-		for _, addonURL := range m.config.Addons {
+		for _, addonURL := range addons {
 			manifest, err := m.client.FetchManifest(ctx, addonURL)
 			if err != nil {
 				continue
@@ -111,7 +114,7 @@ func (m HomeModel) loadCatalogs() tea.Cmd {
 				}
 			}
 		}
-		if len(allItems) == 0 && len(m.config.Addons) > 0 {
+		if len(allItems) == 0 && len(addons) > 0 {
 			return catalogErrorMsg{err: fmt.Errorf("no catalog items loaded — check that your addons are reachable")}
 		}
 		return catalogLoadedMsg{items: allItems}
