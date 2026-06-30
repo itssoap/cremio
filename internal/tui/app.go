@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/itssoap/cremio/internal/config"
 	"github.com/itssoap/cremio/internal/history"
+	"github.com/itssoap/cremio/internal/player"
 	"github.com/itssoap/cremio/internal/stremio"
 )
 
@@ -83,7 +84,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.screen == ScreenSearch && a.search.inputFocused {
 				break
 			}
-			if a.screen == ScreenStreams && a.streams.filterActive {
+			if a.screen == ScreenStreams && (a.streams.filterActive || a.streams.rgSelectorActive || a.streams.rgEpSelectorActive) {
 				break
 			}
 			// Don't treat "q" as quit while typing in a list's built-in filter.
@@ -92,7 +93,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, tea.Quit
 		case "esc", "escape":
-			if a.screen == ScreenStreams && a.streams.filterActive {
+			if a.screen == ScreenStreams && (a.streams.filterActive || a.streams.rgSelectorActive || a.streams.rgEpSelectorActive) {
 				break
 			}
 			if a.screen == ScreenDetail && a.detail.viewingEpisodes {
@@ -173,8 +174,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.streams.pendingType = ""
 		a.streams.contentID = msg.ID
 		a.streams.contentType = msg.Type
+		a.streams.metaName = msg.MetaName
+		a.streams.metaYear = msg.MetaYear
 		a.streams.filterInput.SetValue("")
 		a.streams.list.SetItems(nil)
+		a.streams.resetDownloadState()
 		return a, tea.Batch(a.streams.spinner.Tick, a.streams.LoadStreams(msg))
 
 	case NavigateToAllStreamsMsg:
@@ -186,9 +190,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.streams.pendingType = msg.Type
 		a.streams.contentID = ""
 		a.streams.contentType = msg.Type
+		a.streams.metaName = msg.MetaName
+		a.streams.metaYear = msg.MetaYear
 		a.streams.filterInput.SetValue("")
 		a.streams.filterActive = true
 		a.streams.list.SetItems(nil)
+		a.streams.resetDownloadState()
 		return a, a.streams.filterInput.Focus()
 
 	case AddonAddedMsg:
@@ -240,6 +247,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case searchAddonNameMsg:
 		a.search, _ = a.search.Update(msg)
+		return a, nil
+
+	case player.BatchDownloadResult:
+		a.streams, _ = a.streams.Update(msg)
+		return a, nil
+
+	case player.DownloadResult:
+		a.streams, _ = a.streams.Update(msg)
 		return a, nil
 	}
 
@@ -351,13 +366,17 @@ type NavigateToDetailMsg struct {
 }
 
 type NavigateToStreamsMsg struct {
-	ID   string
-	Type string
+	ID       string
+	Type     string
+	MetaName string
+	MetaYear string
 }
 
 type NavigateToAllStreamsMsg struct {
-	Videos []stremio.Video
-	Type   string
+	Videos   []stremio.Video
+	Type     string
+	MetaName string
+	MetaYear string
 }
 
 type AddonAddedMsg struct{}
