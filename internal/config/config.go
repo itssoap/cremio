@@ -11,11 +11,14 @@ import (
 const CinemetaURL = "https://v3-cinemeta.strem.io/manifest.json"
 
 type Config struct {
-	Addons          []string `json:"addons"`
-	AutoFocusSearch bool     `json:"auto_focus_search"`
-	SearchAddon     string   `json:"search_addon"`
-	PlaylistMode    bool     `json:"playlist_mode"`
-	path            string
+	Addons           []string `json:"addons"`
+	AutoFocusSearch  bool     `json:"auto_focus_search"`
+	SearchAddon      string   `json:"search_addon"`
+	PlaylistMode     bool     `json:"playlist_mode"`
+	DownloadDir      string   `json:"download_dir"`
+	DownloadAria2c   *bool    `json:"download_use_aria2c,omitempty"`
+	DownloadParallel int      `json:"download_parallel,omitempty"`
+	path             string
 }
 
 func Load() (*Config, error) {

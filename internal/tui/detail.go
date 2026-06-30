@@ -286,7 +286,7 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 					}
 				}
 			}
-		case "f":
+		case "f", "d":
 			if m.meta != nil && m.meta.Type == "series" && len(m.meta.Videos) > 0 {
 				var videos []stremio.Video
 				if m.viewingEpisodes {
@@ -301,12 +301,14 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 				metaType := m.meta.Type
 				metaName := m.meta.Name
 				metaYear := m.meta.ReleaseInfo
+				downloadMode := msg.String() == "d"
 				return m, func() tea.Msg {
 					return NavigateToAllStreamsMsg{
-						Videos:   videos,
-						Type:     metaType,
-						MetaName: metaName,
-						MetaYear: metaYear,
+						Videos:       videos,
+						Type:         metaType,
+						MetaName:     metaName,
+						MetaYear:     metaYear,
+						DownloadMode: downloadMode,
 					}
 				}
 			}
