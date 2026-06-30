@@ -214,5 +214,5 @@ func (m HistoryModel) View() string {
 	if m.history == nil || (len(m.history.Movies) == 0 && len(m.history.Shows) == 0) {
 		return SubtitleStyle.Render("No watch history yet. Play something and it will appear here.")
 	}
-	return m.list.View()
+	return m.list.View() + "\n" + HelpStyle.Render("enter: open • tab: switch tab • D: downloads • q: quit")
 }

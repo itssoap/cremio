@@ -176,5 +176,5 @@ func (m HomeModel) View() string {
 	if len(m.config.Addons) == 0 {
 		return SubtitleStyle.Render("No addons installed. Press Tab to go to Addons and add one.")
 	}
-	return m.list.View()
+	return m.list.View() + "\n" + HelpStyle.Render("enter: open • tab: switch tab • D: downloads • q: quit")
 }

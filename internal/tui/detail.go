@@ -364,7 +364,7 @@ func (m DetailModel) View() string {
 		return m.spinner.View() + " Loading details..."
 	}
 	if m.err != nil {
-		return ErrorStyle.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" + HelpStyle.Render("esc: back • tab: switch tab")
+		return ErrorStyle.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" + HelpStyle.Render("esc: back • tab: switch tab • D: downloads • q: quit")
 	}
 	if m.meta == nil {
 		return ""
@@ -424,13 +424,13 @@ func (m DetailModel) View() string {
 
 	// For movies, show prompt to play
 	if m.meta.Type == "movie" || len(m.meta.Videos) == 0 {
-		sections = append(sections, HelpStyle.Render("enter: find streams • w: toggle watched • esc: back • q: quit"))
+		sections = append(sections, HelpStyle.Render("enter: find streams • w: toggle watched • D: downloads • esc: back • q: quit"))
 	} else if !m.viewingEpisodes {
 		sections = append(sections, m.list.View())
-		sections = append(sections, HelpStyle.Render("enter: view episodes • w: toggle watched • f: filter all episodes • esc: back • q: quit"))
+		sections = append(sections, HelpStyle.Render("enter: view episodes • w: toggle season • d: download • f: fetch streams • D: downloads • esc: back • q: quit"))
 	} else {
 		sections = append(sections, m.list.View())
-		sections = append(sections, HelpStyle.Render("enter: streams • w: toggle watched • f: filter season • esc: back to seasons • q: quit"))
+		sections = append(sections, HelpStyle.Render("enter: streams • w: toggle watched • d: download • f: fetch streams • D: downloads • esc: back • q: quit"))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)

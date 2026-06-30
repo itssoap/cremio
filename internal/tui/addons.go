@@ -242,7 +242,7 @@ func (m AddonsModel) View() string {
 		if m.saveErr != nil {
 			sections = append(sections, ErrorStyle.Render(fmt.Sprintf("⚠ Could not save config: %v", m.saveErr)))
 		}
-		sections = append(sections, HelpStyle.Render("a: add addon • d: remove selected (Cinemeta is locked) • tab: switch tab"))
+		sections = append(sections, HelpStyle.Render("a: add addon • d: remove selected • D: downloads • tab: switch tab • q: quit"))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
