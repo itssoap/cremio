@@ -36,13 +36,21 @@ Both scripts download the latest binary, install it to a local bin directory, an
 - History tab for quick access to watched movies and shows
 - Series support with season/episode navigation
 - Stream resolution across multiple addons
+- Stream info panel toggle (`i` key) showing addon, details, type
 - Playback via mpv (should be in PATH)
+- Playlist mode: batch-play all episodes sequentially via mpv (set `playlist_mode` in config)
+- Download streams to Plex-formatted folder structure
+  - Single movie/episode download with `d` key
+  - Batch season download: choose release group (with resolution/size info), select episodes, queue
+  - Downloads popup (`D` key) with progress bars, cancel, queue management
+  - aria2c support for accelerated downloads (auto-detected; `aria2c -x 16 -s 16 -k 1M`)
 - Addon management (add/remove by URL with manifest validation)
 - Persistent configuration stored as JSON
 
 ## Prerequisites
 
 - **mpv** in your system `PATH` (for stream playback)
+- **aria2c** (optional) in your system `PATH` for accelerated downloads
 - **Go 1.25 or later** (only needed to build from source)
 - **go-winres** (optional, only needed to embed a custom icon on Windows builds)
 
@@ -110,7 +118,10 @@ The config file holds the list of installed addon base URLs and optional setting
     "https://v3-cinemeta.strem.io/manifest.json"
   ],
   "auto_focus_search": false,
-  "playlist_mode": false
+  "playlist_mode": false,
+  "download_dir": "",
+  "download_use_aria2c": true,
+  "download_parallel": 1
 }
 ```
 
@@ -121,6 +132,9 @@ The config file holds the list of installed addon base URLs and optional setting
 | `addons` | array of strings | `[cinemeta URL]` | List of installed Stremio addon manifest URLs |
 | `auto_focus_search` | boolean | `false` | When true, the search input is automatically focused when switching to the Search tab |
 | `playlist_mode` | boolean | `false` | When true, playing a stream in batch mode sends all episodes as an mpv playlist starting at the selected episode |
+| `download_dir` | string | `""` (cwd) | Base directory for downloads. Plex folder structure is created inside |
+| `download_use_aria2c` | boolean | `true` | Use aria2c for downloads if available in PATH (falls back to Go HTTP) |
+| `download_parallel` | integer | `1` | Number of simultaneous downloads |
 
 ## Watch History
 
@@ -163,15 +177,17 @@ The file uses a simple JSON structure:
 | Key        | Action                                      |
 |------------|---------------------------------------------|
 | `tab`      | Cycle between Home, Search, Addons, and History tabs |
-| `/`        | Focus the search input (Search tab)         |
+| `/`        | Focus the search input (Search tab) / filter (Streams) |
 | `enter`    | Select item / submit input                  |
 | `esc`      | Go back / unfocus input                     |
 | `w`        | Toggle watched (episode, season, or movie)  |
 | `f`        | Fetch streams for all episodes (series)     |
-| `d`        | Download selected stream / batch download (series) |
+| `d`        | Download stream or batch download (series/streams) |
+| `D`        | Toggle downloads popup (global)             |
+| `i`        | Toggle stream info panel (Streams)          |
+| `s`        | Select search addon (Search tab)            |
 | `a`        | Add a new addon (Addons tab)                |
-| `d`        | Remove selected addon (Addons tab)          |
-| `q`       | Quit                                         |
+| `q`        | Quit                                        |
 | `ctrl+c`   | Quit                                        |
 
 ## Project Structure
@@ -181,7 +197,9 @@ main.go                  Entry point
 internal/
   config/config.go       Configuration loading, saving, addon management
   history/history.go     Watch history tracking
-  player/mpv.go          mpv process launcher
+  player/
+    mpv.go               mpv process launcher (single + playlist)
+    download.go          Download manager, HTTP/aria2c backends, Plex paths
   stremio/
     client.go            HTTP client for the Stremio Addon Protocol
     types.go             Manifest, catalog, meta, stream type definitions
@@ -191,7 +209,8 @@ internal/
     search.go            Search screen with addon querying
     addons.go            Addon management screen
     detail.go            Movie/series detail and episode list
-    streams.go           Stream list and mpv launch
+    streams.go           Stream list, mpv launch, download flow
+    downloads.go         Downloads popup with progress and queue management
     historytab.go        History tab for browsing watched movies and shows
     styles.go            Lipgloss style definitions
 winres/
@@ -219,13 +238,15 @@ Use the table below to find the right file for what you want to improve:
 | **Search tab** - search input, result deduplication, client-side filtering | `internal/tui/search.go` |
 | **Addons tab** - add/remove addons, URL validation, manifest display | `internal/tui/addons.go` |
 | **Detail screen** - movie/series info layout, episode/season list, watched toggle | `internal/tui/detail.go` |
-| **Streams screen** - stream list, filter, info panel, mpv launch, batch mode | `internal/tui/streams.go` |
+| **Streams screen** - stream list, filter, info panel, mpv launch, batch mode, download flow | `internal/tui/streams.go` |
+| **Downloads popup** - progress bars, queue management, cancel | `internal/tui/downloads.go` |
 | **History tab** - watched movies/shows list, navigation to detail | `internal/tui/historytab.go` |
 | **Screen routing & global keys** - tab switching, ESC behaviour, app-level messages | `internal/tui/app.go` |
 | **Colours, borders, text styles** | `internal/tui/styles.go` |
 | **Stremio addon protocol** - HTTP client, endpoint logic | `internal/stremio/client.go` |
 | **Stremio types** - manifest, catalog, meta, stream structs | `internal/stremio/types.go` |
 | **Watch history** - toggle watched, local JSON structure | `internal/history/history.go` |
+| **Download manager** - queue, HTTP/aria2c backends, Plex naming | `internal/player/download.go` |
 | **Config** - addon list persistence, config file path | `internal/config/config.go` |
 | **App data directory** - where config & history are stored | `internal/appdir/appdir.go` |
 | **mpv integration** - launch flags, extra arguments | `internal/player/mpv.go` |
