@@ -12,6 +12,8 @@ import (
 	"github.com/itssoap/cremio/internal/stremio"
 )
 
+const homeHelpText = "enter: open • tab: switch tab • D: downloads • q: quit"
+
 type catalogItem struct {
 	meta    stremio.MetaPreview
 	baseURL string
@@ -75,7 +77,7 @@ func (m HomeModel) Init() tea.Cmd {
 func (m *HomeModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h
-	m.list.SetSize(w, h)
+	m.list.SetSize(w, h-helpBarHeight(homeHelpText, w))
 }
 
 func (m HomeModel) loadCatalogs() tea.Cmd {
@@ -176,5 +178,5 @@ func (m HomeModel) View() string {
 	if len(m.config.Addons) == 0 {
 		return SubtitleStyle.Render("No addons installed. Press Tab to go to Addons and add one.")
 	}
-	return m.list.View() + "\n" + HelpStyle.Render("enter: open • tab: switch tab • D: downloads • q: quit")
+	return m.list.View() + "\n" + HelpStyle.Render(homeHelpText)
 }

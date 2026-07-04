@@ -30,6 +30,7 @@ type App struct {
 	prevScreen Screen
 	width      int
 	height     int
+	incognito  bool
 
 	client  *stremio.Client
 	config  *config.Config
@@ -45,10 +46,13 @@ type App struct {
 	downloads  DownloadsModel
 }
 
-func NewApp(cfg *config.Config, hist *history.WatchHistory) App {
+func NewApp(cfg *config.Config, hist *history.WatchHistory, incognito bool) App {
+	SetTheme(incognito)
+
 	client := stremio.NewClient()
 	detail := NewDetailModel(client, cfg)
 	detail.history = hist
+	detail.incognito = incognito
 
 	parallel := cfg.DownloadParallel
 	if parallel < 1 {
@@ -63,6 +67,7 @@ func NewApp(cfg *config.Config, hist *history.WatchHistory) App {
 		config:     cfg,
 		history:    hist,
 		dlMgr:      dlMgr,
+		incognito:  incognito,
 		home:       NewHomeModel(client, cfg),
 		search:     NewSearchModel(client, cfg),
 		addons:     NewAddonsModel(client, cfg),
@@ -239,7 +244,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.rebuildAddonViews()
 
 	case mpvLaunchedMsg:
-		if a.history != nil && msg.videoID != "" {
+		if a.history != nil && msg.videoID != "" && !a.incognito {
 			// Use the detail model's history ID when available so that
 			// addons using different ID schemes (e.g. tvdb:XXXX in meta
 			// but tt-prefixed video IDs) stay consistent.
@@ -448,6 +453,14 @@ func (a App) renderTabs() string {
 	tabs = append(tabs, tab{"Search", ScreenSearch}, tab{"Addons", ScreenAddons})
 
 	var rendered []string
+	if a.incognito {
+		badge := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#cba6f7")).
+			Padding(0, 1).
+			Render("\U0001f576 incognito")
+		rendered = append(rendered, badge)
+	}
 	for _, t := range tabs {
 		if t.screen == a.screen || (a.screen == ScreenDetail && t.screen == a.prevScreen) || (a.screen == ScreenStreams && t.screen == a.prevScreen) {
 			rendered = append(rendered, TabActiveStyle.Render(t.name))

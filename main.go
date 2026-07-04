@@ -11,6 +11,13 @@ import (
 )
 
 func main() {
+	incognito := false
+	for _, arg := range os.Args[1:] {
+		if arg == "--incognito" || arg == "-incognito" {
+			incognito = true
+		}
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
@@ -23,7 +30,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := tui.NewApp(cfg, hist)
+	app := tui.NewApp(cfg, hist, incognito)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

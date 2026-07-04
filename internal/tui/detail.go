@@ -58,6 +58,7 @@ type DetailModel struct {
 	client          *stremio.Client
 	config          *config.Config
 	history         *history.WatchHistory
+	incognito       bool
 	loading         bool
 	err             error
 	saveErr         error
@@ -313,7 +314,7 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 				}
 			}
 		case "w":
-			if m.meta == nil || m.history == nil {
+			if m.meta == nil || m.history == nil || m.incognito {
 				return m, nil
 			}
 			imdbID := m.historyID()
