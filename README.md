@@ -27,6 +27,47 @@ Both scripts download the latest binary, install it to a local bin directory, an
 
 **Prerequisite:** [mpv](https://mpv.io/installation/) must be in your system `PATH`.
 
+### Updating
+
+Re-running the install command updates cremio in place. The updater is
+SHA-aware: it compares the SHA-256 of your installed binary against the
+checksum GitHub publishes for the release asset, so it only downloads when the
+binary actually differs (falling back to version-tag comparison if no checksum
+is exposed).
+
+It looks for the binary to replace in this order:
+
+1. `cremio` (or `cremio.exe`) in the **current working directory**
+2. `cremio` found on your **PATH**
+3. Otherwise a fresh install to the default bin directory
+
+#### Flags
+
+| Goal | Windows (PowerShell) | Linux / macOS / FreeBSD |
+|------|----------------------|-------------------------|
+| Only check for an update (no changes) | `... install.ps1))) -CheckOnly` | `... \| bash -s -- --check` |
+| Update to the newest **pre-release** | `... install.ps1))) -PreRelease` | `... \| bash -s -- --pre-release` |
+| Skip modifying PATH | `... install.ps1))) -NoPath` | `... \| bash -s -- --no-path` |
+
+On Linux/macOS, append flags after `bash -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itssoap/cremio/main/install.sh | bash -s -- --check
+curl -fsSL https://raw.githubusercontent.com/itssoap/cremio/main/install.sh | bash -s -- --pre-release
+```
+
+On Windows, because `irm | iex` cannot forward arguments, pass flags by turning
+the downloaded script into a script block:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/itssoap/cremio/main/install.ps1))) -CheckOnly
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/itssoap/cremio/main/install.ps1))) -PreRelease
+```
+
+Every download is verified against the published SHA-256 before it replaces
+your existing binary; a mismatch aborts the update without touching the
+installed file.
+
 ## Features
 
 - Browse catalogs from all installed Stremio addons
