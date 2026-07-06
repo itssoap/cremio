@@ -418,8 +418,19 @@ func SanitizePath(s string) string {
 	return strings.TrimSpace(b.String())
 }
 
+// yearRe matches the first standalone 4-digit year in a string.
+var yearRe = regexp.MustCompile(`\d{4}`)
+
+// normalizeYear extracts the first 4-digit year from a release-info string.
+// Series often report a range like "2008-2013" (with an en-dash or other
+// separator); Plex uses only the first air year for the show folder.
+func normalizeYear(year string) string {
+	return yearRe.FindString(year)
+}
+
 // PlexMoviePath returns: <base>/Movies/<Name> (<Year>)/<Name> (<Year>).<ext>
 func PlexMoviePath(base, name, year, ext string) string {
+	year = normalizeYear(year)
 	folder := SanitizePath(name)
 	if year != "" {
 		folder = fmt.Sprintf("%s (%s)", SanitizePath(name), year)
@@ -430,6 +441,7 @@ func PlexMoviePath(base, name, year, ext string) string {
 
 // PlexEpisodePath returns: <base>/TV Shows/<Show> (<Year>)/Season XX/<Show> - SXXEXX - Title.<ext>
 func PlexEpisodePath(base, showName, year string, season, episode int, epTitle, ext string) string {
+	year = normalizeYear(year)
 	show := SanitizePath(showName)
 	if year != "" {
 		show = fmt.Sprintf("%s (%s)", SanitizePath(showName), year)
