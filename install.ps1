@@ -51,6 +51,10 @@ function Install-Cremio {
     $Repo        = "itssoap/cremio"
     $Binary      = "cremio.exe"
     $VersionFile = Join-Path (Split-Path $InstallDir -Parent) ".version"
+    $ScriptUrl   = "https://raw.githubusercontent.com/itssoap/cremio/main/install.ps1"
+    # irm | iex cannot forward args, so flags must go through a script block.
+    $CheckCmd    = "& ([scriptblock]::Create((irm $ScriptUrl))) -CheckOnly"
+    $UpdateCmd   = "irm $ScriptUrl | iex"
 
     # --- helpers ---------------------------------------------------------
     function Write-Step($msg) { Write-Host ":: " -NoNewline -ForegroundColor Cyan; Write-Host $msg }
@@ -64,6 +68,24 @@ function Install-Cremio {
             default { "amd64" }
         }
         return "windows-$arch"
+    }
+
+    # Get-Sha256File computes a lowercase hex SHA-256 using .NET directly, so it
+    # works even where the Get-FileHash cmdlet is unavailable (e.g. trimmed or
+    # constrained PowerShell installs). Returns $null on failure.
+    function Get-Sha256File($path) {
+        try {
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $stream = [System.IO.File]::OpenRead($path)
+                try {
+                    $bytes = $sha.ComputeHash($stream)
+                } finally { $stream.Dispose() }
+            } finally { $sha.Dispose() }
+            return -join ($bytes | ForEach-Object { $_.ToString('x2') })
+        } catch {
+            return $null
+        }
     }
 
     function Invoke-GitHubApi($url) {
@@ -152,7 +174,7 @@ function Install-Cremio {
     $localSha  = $null
     if ($targetBin) {
         if ($assetDigest) {
-            try { $localSha = (Get-FileHash -Path $targetBin -Algorithm SHA256).Hash.ToLower() } catch {}
+            $localSha = Get-Sha256File $targetBin
             if ($localSha) {
                 Write-Info "Installed SHA-256: $localSha"
                 Write-Info "Release   SHA-256: $assetDigest"
@@ -188,7 +210,8 @@ function Install-Cremio {
             Write-Host ""
             Write-Host "  Update available: $tag" -ForegroundColor Yellow
             Write-Info "Installed binary: $targetBin"
-            Write-Info "Run without -CheckOnly to install it."
+            Write-Info "Install it with:"
+            Write-Info "  $UpdateCmd"
             Write-Host ""
             return
         }
@@ -197,7 +220,8 @@ function Install-Cremio {
         if ($CheckOnly) {
             Write-Host ""
             Write-Host "  Cremio is not installed. Latest available: $tag" -ForegroundColor Yellow
-            Write-Info "Run without -CheckOnly to install it."
+            Write-Info "Install it with:"
+            Write-Info "  $UpdateCmd"
             Write-Host ""
             return
         }
@@ -232,11 +256,11 @@ function Install-Cremio {
         Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $tmpFile -ErrorAction Stop
 
         if ($assetDigest) {
-            $dlSha = (Get-FileHash -Path $tmpFile -Algorithm SHA256).Hash.ToLower()
-            if ($dlSha -ne $assetDigest) {
+            $dlSha = Get-Sha256File $tmpFile
+            if ($dlSha -and $dlSha -ne $assetDigest) {
                 throw "SHA-256 mismatch on downloaded file. Expected $assetDigest, got $dlSha. Aborting."
             }
-            Write-Info "Download verified (sha256 ok)"
+            if ($dlSha) { Write-Info "Download verified (sha256 ok)" }
         }
 
         Move-Item -Path $tmpFile -Destination $dest -Force -ErrorAction Stop
@@ -281,7 +305,8 @@ function Install-Cremio {
     Write-Host ""
     Write-Host "  Cremio $tag is ready!" -ForegroundColor Green
     Write-Host "  Run 'cremio' in a new terminal to get started." -ForegroundColor Cyan
-    Write-Host "  Re-run with -CheckOnly anytime to look for updates." -ForegroundColor DarkGray
+    Write-Host "  Check for updates anytime with:" -ForegroundColor DarkGray
+    Write-Host "    $CheckCmd" -ForegroundColor DarkGray
     Write-Host ""
 }
 

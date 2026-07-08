@@ -64,6 +64,11 @@ the downloaded script into a script block:
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/itssoap/cremio/main/install.ps1))) -PreRelease
 ```
 
+> Do not write `irm ...install.ps1 -CheckOnly | iex`. The `-CheckOnly` there
+> binds to `irm` (Invoke-RestMethod), not to the script, and fails with
+> "A parameter cannot be found that matches parameter name 'CheckOnly'".
+> Use the script-block form above instead.
+
 Every download is verified against the published SHA-256 before it replaces
 your existing binary; a mismatch aborts the update without touching the
 installed file.

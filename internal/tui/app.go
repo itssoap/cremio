@@ -454,11 +454,14 @@ func (a App) renderTabs() string {
 
 	var rendered []string
 	if a.incognito {
+		// Reverse-video pill instead of an emoji: renders on every terminal
+		// (including legacy Windows conhost) where astral-plane glyphs tofu.
 		badge := lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#cba6f7")).
+			Foreground(lipgloss.Color("#1e1e2e")). // base (dark) text
+			Background(lipgloss.Color("#cba6f7")). // mauve fill
 			Padding(0, 1).
-			Render("\U0001f576 incognito")
+			Render("INCOGNITO")
 		rendered = append(rendered, badge)
 	}
 	for _, t := range tabs {
