@@ -33,7 +33,9 @@ func (f Filter) IsEmpty() bool {
 	return len(f.includes) == 0 && len(f.excludes) == 0
 }
 
-// Match returns true if the combined text of the given strings satisfies the filter.
+// Match returns true if the combined text of the given strings satisfies the
+// filter. Callers pass every field shown to the user (name, title, description)
+// so the filter matches against the same text the user reads on screen.
 // All include keywords must appear, and no exclude keywords may appear.
 func (f Filter) Match(texts ...string) bool {
 	combined := strings.ToLower(strings.Join(texts, " "))

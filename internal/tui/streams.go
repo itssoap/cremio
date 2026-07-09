@@ -235,7 +235,7 @@ func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter)
 					continue
 				}
 				for _, s := range resp.Streams {
-					if filter.IsEmpty() || filter.Match(s.Name, s.Title) {
+					if filter.IsEmpty() || filter.Match(s.Name, s.Title, s.Description) {
 						allStreams = append(allStreams, labeledStream{stream: s, label: label, videoID: video.ID})
 					}
 				}
@@ -263,7 +263,7 @@ func (m *StreamsModel) applyFilter() {
 	f := ParseFilter(m.filterInput.Value())
 	var filtered []list.Item
 	for _, item := range m.allItems {
-		if f.IsEmpty() || f.Match(item.stream.Name, item.stream.Title) {
+		if f.IsEmpty() || f.Match(item.stream.Name, item.stream.Title, item.stream.Description) {
 			filtered = append(filtered, item)
 		}
 	}
