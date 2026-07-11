@@ -48,19 +48,23 @@ func TestFilterMatchAcrossFields(t *testing.T) {
 
 func TestPassesGlobalFilters(t *testing.T) {
 	item := streamItem{
-		stream: stremioStream("Stremtorz TB\n1080p - WEB-DL - AVC - [VARYG]",
-			"Show.S01E01.1080p.WEB-DL-VARYG.mkv", "http://host/f.mkv"),
+		stream: stremioStream("2160p - WEB-DL - HEVC - [VARYG]",
+			"Show.S01E01.2160p.WEB-DL-VARYG.mkv", "http://host/f.mkv"),
 	}
+	item.stream.Description = "\U0001F4C1 Show.S01E01.2160p.WEB-DL-VARYG.mkv \nSize: 5 GB\nAddon : Strem Torz | RD"
 	pass := func(g config.GlobalFilters) bool { return passesGlobalFilters(g, item) }
 
 	if !pass(config.GlobalFilters{}) {
 		t.Error("empty global filters should pass")
 	}
-	if !pass(config.GlobalFilters{Addon: "stremtorz"}) {
-		t.Error("addon filter should match the provider tag")
+	if !pass(config.GlobalFilters{Addon: "strem torz"}) {
+		t.Error("addon filter should match the provider tag from the description")
 	}
-	if pass(config.GlobalFilters{Addon: "torrentio"}) {
-		t.Error("addon filter should reject non-matching provider tag")
+	if !pass(config.GlobalFilters{Addon: "RD"}) {
+		t.Error("addon filter should match the debrid tag")
+	}
+	if pass(config.GlobalFilters{Addon: "torbox"}) {
+		t.Error("addon filter should reject a non-matching provider tag")
 	}
 	if !pass(config.GlobalFilters{FileSource: "web-dl"}) {
 		t.Error("source filter should match WEB-DL")

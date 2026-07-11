@@ -116,18 +116,27 @@ func streamTypeLabel(s stremio.Stream) string {
 	return "Unknown"
 }
 
-// providerTag returns the addon/debrid source tag the addon itself puts on the
-// stream (the first line of Name, e.g. "Stremtorz TB", "RD", "Torrentio").
-// This is what users recognise as the stream's source/provider.
+// providerTag returns the addon/debrid source tag the addon conveys, e.g.
+// "Strem Torz | RD", "Comet | TB", or "Torrentio". Aggregators such as
+// AIOStreams embed it in the description as a line like "Addon : Strem Torz | RD";
+// others (Torrentio-style) use the first line of Name. Returns "" when the
+// stream carries no recognisable provider tag (Name is release info only).
 func providerTag(s stremio.Stream) string {
-	name := strings.TrimSpace(s.Name)
-	if name == "" {
-		return ""
+	for _, line := range strings.Split(s.Description, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(line), "addon") {
+			if i := strings.IndexByte(line, ':'); i >= 0 {
+				if v := strings.TrimSpace(line[i+1:]); v != "" {
+					return v
+				}
+			}
+		}
 	}
-	if i := strings.IndexByte(name, '\n'); i >= 0 {
-		return strings.TrimSpace(name[:i])
+	// Torrentio-style addons put their brand on the first line of a multi-line Name.
+	if name := strings.TrimSpace(s.Name); strings.Contains(name, "\n") {
+		return strings.TrimSpace(name[:strings.IndexByte(name, '\n')])
 	}
-	return name
+	return ""
 }
 
 type StreamsModel struct {
