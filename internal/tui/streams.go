@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -58,6 +59,77 @@ func (s streamItem) Description() string {
 }
 func (s streamItem) FilterValue() string { return s.stream.DisplayName() }
 
+// fileName resolves the real download filename for this stream, preferring the
+// addon-provided behaviorHints.filename, then a filename in the URL, then a
+// filename-looking Title/Description. Returns "" if none can be determined.
+func (s streamItem) fileName() string {
+	if f := s.stream.Filename(); f != "" {
+		return strings.TrimSpace(f)
+	}
+	if f := player.FilenameFromURL(s.stream.PlayableURL()); f != "" {
+		return f
+	}
+	for _, cand := range []string{s.stream.Title, s.stream.Description} {
+		cand = strings.TrimSpace(cand)
+		// Strip a leading folder emoji some addons prepend.
+		cand = strings.TrimSpace(strings.TrimPrefix(cand, "\U0001f4c1"))
+		if looksLikeFilename(cand) {
+			return cand
+		}
+	}
+	return ""
+}
+
+func looksLikeFilename(s string) bool {
+	if strings.ContainsAny(s, "\n") {
+		return false
+	}
+	switch strings.ToLower(fileExt(s)) {
+	case ".mkv", ".mp4", ".avi", ".webm", ".ts":
+		return true
+	}
+	return false
+}
+
+func fileExt(s string) string {
+	if i := strings.LastIndex(s, "."); i >= 0 && i > len(s)-6 {
+		return s[i:]
+	}
+	return ""
+}
+
+// streamTypeLabel returns a short label for the stream's delivery type.
+func streamTypeLabel(s stremio.Stream) string {
+	switch {
+	case s.URL != "":
+		return "HTTP"
+	case s.InfoHash != "":
+		if s.FileIdx != nil {
+			return fmt.Sprintf("Torrent (file #%d)", *s.FileIdx)
+		}
+		return "Torrent"
+	case s.YtID != "":
+		return "YouTube"
+	case s.ExternalURL != "":
+		return "External"
+	}
+	return "Unknown"
+}
+
+// providerTag returns the addon/debrid source tag the addon itself puts on the
+// stream (the first line of Name, e.g. "Stremtorz TB", "RD", "Torrentio").
+// This is what users recognise as the stream's source/provider.
+func providerTag(s stremio.Stream) string {
+	name := strings.TrimSpace(s.Name)
+	if name == "" {
+		return ""
+	}
+	if i := strings.IndexByte(name, '\n'); i >= 0 {
+		return strings.TrimSpace(name[:i])
+	}
+	return name
+}
+
 type StreamsModel struct {
 	list          list.Model
 	spinner       spinner.Model
@@ -101,7 +173,7 @@ type StreamsModel struct {
 }
 
 type streamsLoadedMsg struct {
-	streams []stremio.Stream
+	streams []loadedStream
 }
 type streamsErrorMsg struct {
 	err error
@@ -190,7 +262,7 @@ func (m *StreamsModel) SetSize(w, h int) {
 func (m *StreamsModel) updateListSize() {
 	listH := m.height - 7 // filter input (2) + help (1) + spacing
 	if m.infoMode {
-		listH -= 6 // info panel: 4 content lines + 2 border rows
+		listH -= 9 // info panel: up to 7 content lines + 2 border rows
 	}
 	if listH < 3 {
 		listH = 3
@@ -201,43 +273,83 @@ func (m *StreamsModel) updateListSize() {
 func (m StreamsModel) LoadStreams(nav NavigateToStreamsMsg) tea.Cmd {
 	// Snapshot the addon list to avoid racing with config mutations.
 	addons := append([]string(nil), m.config.Addons...)
+	client := m.client
 	return func() tea.Msg {
-		var allStreams []stremio.Stream
 		ctx := context.Background()
 
-		for _, addonURL := range addons {
-			resp, err := m.client.FetchStreams(ctx, addonURL, nav.Type, nav.ID)
-			if err != nil {
-				continue
-			}
-			allStreams = append(allStreams, resp.Streams...)
+		type res struct{ streams []stremio.Stream }
+		results := make([]res, len(addons))
+		var wg sync.WaitGroup
+		for i, addonURL := range addons {
+			wg.Add(1)
+			go func(i int, url string) {
+				defer wg.Done()
+				resp, err := client.FetchStreams(ctx, url, nav.Type, nav.ID)
+				if err != nil {
+					return
+				}
+				results[i] = res{streams: resp.Streams}
+			}(i, addonURL)
 		}
+		wg.Wait()
 
-		if len(allStreams) == 0 {
+		var out []loadedStream
+		for i := range addons {
+			for _, s := range results[i].streams {
+				out = append(out, loadedStream{stream: s})
+			}
+		}
+		if len(out) == 0 {
 			return streamsErrorMsg{err: fmt.Errorf("no streams found")}
 		}
-		return streamsLoadedMsg{streams: allStreams}
+		return streamsLoadedMsg{streams: out}
 	}
 }
 
 func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter) tea.Cmd {
 	// Snapshot the addon list to avoid racing with config mutations.
 	addons := append([]string(nil), m.config.Addons...)
+	client := m.client
 	return func() tea.Msg {
-		var allStreams []labeledStream
 		ctx := context.Background()
 
-		for _, video := range nav.Videos {
+		type key struct {
+			videoIdx int
+			addonIdx int
+		}
+		type res struct {
+			key     key
+			label   string
+			videoID string
+			streams []stremio.Stream
+		}
+		results := make([]res, len(nav.Videos)*len(addons))
+		var wg sync.WaitGroup
+		for vi, video := range nav.Videos {
 			label := fmt.Sprintf("S%02dE%02d", video.Season, video.Episode)
-			for _, addonURL := range addons {
-				resp, err := m.client.FetchStreams(ctx, addonURL, nav.Type, video.ID)
-				if err != nil {
-					continue
-				}
-				for _, s := range resp.Streams {
-					if filter.IsEmpty() || filter.Match(s.Name, s.Title, s.Description) {
-						allStreams = append(allStreams, labeledStream{stream: s, label: label, videoID: video.ID})
+			for ai, addonURL := range addons {
+				wg.Add(1)
+				idx := vi*len(addons) + ai
+				go func(idx int, k key, label, videoID, addonURL string) {
+					defer wg.Done()
+					r := res{key: k, label: label, videoID: videoID}
+					resp, err := client.FetchStreams(ctx, addonURL, nav.Type, videoID)
+					if err == nil {
+						r.streams = resp.Streams
 					}
+					results[idx] = r
+				}(idx, key{vi, ai}, label, video.ID, addonURL)
+			}
+		}
+		wg.Wait()
+
+		var allStreams []labeledStream
+		for _, r := range results {
+			for _, s := range r.streams {
+				if filter.IsEmpty() || filter.Match(s.Name, s.Title, s.Description) {
+					allStreams = append(allStreams, labeledStream{
+						stream: s, label: r.label, videoID: r.videoID,
+					})
 				}
 			}
 		}
@@ -247,6 +359,10 @@ func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter)
 		}
 		return allStreamsLoadedMsg{streams: allStreams}
 	}
+}
+
+type loadedStream struct {
+	stream stremio.Stream
 }
 
 type labeledStream struct {
@@ -261,13 +377,42 @@ type allStreamsLoadedMsg struct {
 
 func (m *StreamsModel) applyFilter() {
 	f := ParseFilter(m.filterInput.Value())
+	gf := m.config.GlobalFilters
 	var filtered []list.Item
 	for _, item := range m.allItems {
+		if !passesGlobalFilters(gf, item) {
+			continue
+		}
 		if f.IsEmpty() || f.Match(item.stream.Name, item.stream.Title, item.stream.Description) {
 			filtered = append(filtered, item)
 		}
 	}
 	m.list.SetItems(filtered)
+}
+
+// passesGlobalFilters evaluates the persistent per-field global filters against
+// a stream. Empty filter fields are ignored.
+func passesGlobalFilters(gf config.GlobalFilters, item streamItem) bool {
+	if gf.IsEmpty() {
+		return true
+	}
+	s := item.stream
+	if gf.Addon != "" && !ParseFilter(gf.Addon).Match(providerTag(s)) {
+		return false
+	}
+	if gf.FileInfo != "" && !ParseFilter(gf.FileInfo).Match(s.Name, s.Title, s.Description, item.fileName()) {
+		return false
+	}
+	if gf.FileSource != "" && !ParseFilter(gf.FileSource).Match(player.ParseSource(s.Name, s.Title, s.Description)) {
+		return false
+	}
+	if gf.Type != "" && !ParseFilter(gf.Type).Match(streamTypeLabel(s)) {
+		return false
+	}
+	if gf.ReleaseGroup != "" && !ParseFilter(gf.ReleaseGroup).Match(player.ExtractReleaseGroup(s.Name)) {
+		return false
+	}
+	return true
 }
 
 // buildPlaylist collects the first playable stream per episode label from the
@@ -427,9 +572,12 @@ func (m *StreamsModel) enqueueBatchDownload(mgr *player.DownloadManager, group s
 			continue
 		}
 		url := si.stream.PlayableURL()
-		ext := player.GuessExtension(url)
-		destPath := player.PlexEpisodePath(downloadDir, m.metaName, m.metaYear, ep.season, ep.episode, ep.epTitle, ext)
-		mgr.Enqueue(ep.label, url, destPath)
+		fname := si.fileName()
+		if fname == "" {
+			fname = fmt.Sprintf("%s - %s%s", m.metaName, ep.label, player.GuessExtension(url))
+		}
+		destPath := player.EpisodePath(downloadDir, m.metaName, m.metaYear, ep.season, fname)
+		mgr.Enqueue(fname, url, destPath)
 		count++
 	}
 	return count
@@ -438,19 +586,29 @@ func (m *StreamsModel) enqueueBatchDownload(mgr *player.DownloadManager, group s
 // enqueueSingleDownload enqueues a single stream download.
 func (m *StreamsModel) enqueueSingleDownload(mgr *player.DownloadManager, item streamItem, downloadDir string) {
 	url := item.stream.PlayableURL()
-	ext := player.GuessExtension(url)
-	var destPath string
+	fname := item.fileName()
 	if m.contentType == "movie" {
-		destPath = player.PlexMoviePath(downloadDir, m.metaName, m.metaYear, ext)
-	} else {
-		videoID := item.videoID
-		if videoID == "" {
-			videoID = m.contentID
+		if fname == "" {
+			fname = m.metaName
+			if y := m.metaYear; y != "" {
+				fname = fmt.Sprintf("%s (%s)", m.metaName, y)
+			}
+			fname += player.GuessExtension(url)
 		}
-		season, episode := history.ParseEpisodeID(videoID)
-		destPath = player.PlexEpisodePath(downloadDir, m.metaName, m.metaYear, season, episode, "", ext)
+		destPath := player.MoviePath(downloadDir, m.metaName, m.metaYear, fname)
+		mgr.Enqueue(fname, url, destPath)
+		return
 	}
-	mgr.Enqueue(m.metaName, url, destPath)
+	videoID := item.videoID
+	if videoID == "" {
+		videoID = m.contentID
+	}
+	season, episode := history.ParseEpisodeID(videoID)
+	if fname == "" {
+		fname = fmt.Sprintf("%s - S%02dE%02d%s", m.metaName, season, episode, player.GuessExtension(url))
+	}
+	destPath := player.EpisodePath(downloadDir, m.metaName, m.metaYear, season, fname)
+	mgr.Enqueue(fname, url, destPath)
 }
 
 func (m StreamsModel) Update(msg tea.Msg) (StreamsModel, tea.Cmd) {
@@ -466,8 +624,8 @@ func (m StreamsModel) Update(msg tea.Msg) (StreamsModel, tea.Cmd) {
 	case streamsLoadedMsg:
 		m.loading = false
 		m.allItems = make([]streamItem, len(msg.streams))
-		for i, s := range msg.streams {
-			m.allItems[i] = streamItem{stream: s}
+		for i, ls := range msg.streams {
+			m.allItems[i] = streamItem{stream: ls.stream}
 		}
 		m.applyFilter()
 		return m, nil
@@ -671,7 +829,7 @@ func (m StreamsModel) Update(msg tea.Msg) (StreamsModel, tea.Cmd) {
 				}
 
 				// Batch mode: build playlist (one stream per episode)
-				if item.episodeLabel != "" && m.config.PlaylistMode {
+				if item.episodeLabel != "" && m.config.PlaylistEnabled() {
 					playlist, startIdx := m.buildPlaylist(item)
 					if len(playlist) > 1 {
 						return m, func() tea.Msg {
@@ -711,47 +869,58 @@ func (m StreamsModel) infoPanel() string {
 	}
 	s := item.stream
 
+	label := func(k, v string) string {
+		return DetailLabelStyle.Render(k) + DetailValueStyle.Render(v)
+	}
 	var rows []string
 
-	// Addon name — first line of stream.Name
+	// Release / quality line (addon's own name field, e.g. "1080p - WEB-DL - [VARYG]")
 	if s.Name != "" {
-		addonName := strings.SplitN(s.Name, "\n", 2)[0]
-		rows = append(rows, DetailLabelStyle.Render("Addon:   ")+DetailValueStyle.Render(strings.TrimSpace(addonName)))
+		release := strings.ReplaceAll(strings.TrimSpace(s.Name), "\n", " ")
+		rows = append(rows, label("Release: ", release))
 	}
 
-	// Details (size / seeders / language) — stream.Title
-	if s.Title != "" {
-		rows = append(rows, DetailLabelStyle.Render("Details: ")+DetailValueStyle.Render(strings.TrimSpace(s.Title)))
+	// Actual file name
+	if f := item.fileName(); f != "" {
+		rows = append(rows, label("File:    ", f))
 	}
 
-	// Extra description
-	if s.Description != "" {
-		rows = append(rows, DetailLabelStyle.Render("Info:    ")+DetailValueStyle.Render(strings.TrimSpace(s.Description)))
+	// Size: prefer exact behaviorHints.videoSize, else parse from text
+	sizeStr := ""
+	if vs := s.VideoSize(); vs > 0 {
+		sizeStr = player.FormatBytes(vs)
+	} else if _, disp := player.ParseSize(s.Name, s.Title, s.Description); disp != "" {
+		sizeStr = disp
+	}
+	if sizeStr != "" {
+		rows = append(rows, label("Size:    ", sizeStr))
 	}
 
-	// Stream type
-	streamType := "Unknown"
-	switch {
-	case s.URL != "":
-		streamType = "HTTP"
-	case s.InfoHash != "":
-		streamType = "Torrent"
-		if s.FileIdx != nil {
-			streamType += fmt.Sprintf(" (file #%d)", *s.FileIdx)
-		}
-	case s.YtID != "":
-		streamType = "YouTube"
-	case s.ExternalURL != "":
-		streamType = "External"
+	// Source (BluRay / WEB-DL / ...)
+	if src := player.ParseSource(s.Name, s.Title, s.Description); src != "" {
+		rows = append(rows, label("Source:  ", src))
 	}
-	rows = append(rows, DetailLabelStyle.Render("Type:    ")+DetailValueStyle.Render(streamType))
+
+	// Release group
+	if g := player.ExtractReleaseGroup(s.Name); g != "" && g != "Unknown" {
+		rows = append(rows, label("Group:   ", g))
+	}
+
+	// Source/provider tag the addon conveys (e.g. "Stremtorz TB", "RD", "Torrentio")
+	if tag := providerTag(s); tag != "" {
+		rows = append(rows, label("Addon:   ", tag))
+	}
+
+	// Delivery type
+	rows = append(rows, label("Type:    ", streamTypeLabel(s)))
 
 	return InfoPanelStyle.Width(m.width - 4).Render(strings.Join(rows, "\n"))
 }
 
 func (m StreamsModel) View() string {
 	if m.loading {
-		return m.spinner.View() + " Loading streams..."
+		return m.spinner.View() + " Loading streams...\n" +
+			HelpStyle.Render("esc: cancel")
 	}
 	if m.err != nil {
 		return ErrorStyle.Render(fmt.Sprintf("Error: %v", m.err))

@@ -8,13 +8,13 @@ import (
 
 func TestNormalizeYear(t *testing.T) {
 	cases := map[string]string{
-		"2013":            "2013",
-		"2008\u20132013":  "2008", // en-dash range
-		"2008\u20142013":  "2008", // em-dash range
-		"2008-2013":       "2008", // hyphen range
-		"2008\u2013":      "2008", // open-ended range
-		"":                "",
-		"unknown":         "",
+		"2013":           "2013",
+		"2008\u20132013": "2008", // en-dash range
+		"2008\u20142013": "2008", // em-dash range
+		"2008-2013":      "2008", // hyphen range
+		"2008\u2013":     "2008", // open-ended range
+		"":               "",
+		"unknown":        "",
 	}
 	for in, want := range cases {
 		if got := normalizeYear(in); got != want {
@@ -23,13 +23,69 @@ func TestNormalizeYear(t *testing.T) {
 	}
 }
 
-func TestPlexEpisodePathYearRange(t *testing.T) {
-	got := PlexEpisodePath("/dl", "The Show", "2008\u20132013", 1, 2, "Pilot", ".mkv")
-	want := filepath.Join("/dl", "TV Shows", "The Show (2008)", "Season 01", "The Show (2008) - S01E02 - Pilot.mkv")
+func TestEpisodePathKeepsFilename(t *testing.T) {
+	fname := "Saga of Tanya the Evil (2017) - S01E01 - 001 - The Devil [Bluray-1080p][x265]-Vodes.mkv"
+	got := EpisodePath("/dl", "Saga of Tanya the Evil", "2017\u20132018", 1, fname)
+	want := filepath.Join("/dl", "Saga of Tanya the Evil (2017)", "Season 01", fname)
 	if got != want {
-		t.Errorf("PlexEpisodePath = %q, want %q", got, want)
+		t.Errorf("EpisodePath = %q, want %q", got, want)
 	}
-	if strings.ContainsRune(got, '\u2013') || strings.ContainsRune(got, '\u2014') {
-		t.Errorf("path contains dash char: %q", got)
+	// No Movies/TV Shows parent, dash chars preserved (year range collapsed).
+	if strings.Contains(got, "TV Shows") || strings.Contains(got, "Movies") {
+		t.Errorf("path should not contain media-type parent folder: %q", got)
+	}
+	if !strings.Contains(got, "-Vodes.mkv") {
+		t.Errorf("release group lost from filename: %q", got)
+	}
+}
+
+func TestMoviePathKeepsFilename(t *testing.T) {
+	fname := "The Matrix (1999) [1080p BluRay x264]-GROUP.mkv"
+	got := MoviePath("/dl", "The Matrix", "1999", fname)
+	want := filepath.Join("/dl", "The Matrix (1999)", fname)
+	if got != want {
+		t.Errorf("MoviePath = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "Movies") {
+		t.Errorf("path should not contain Movies parent: %q", got)
+	}
+}
+
+func TestParseAria2Size(t *testing.T) {
+	cases := map[string]int64{
+		"1.0B":     1,
+		"512KiB":   512 * 1024,
+		"1.0MiB":   1024 * 1024,
+		"1.5GiB":   int64(1.5 * 1024 * 1024 * 1024),
+		"2GiB":     2 * 1024 * 1024 * 1024,
+		"garbage":  0,
+	}
+	for in, want := range cases {
+		if got := parseAria2Size(in); got != want {
+			t.Errorf("parseAria2Size(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestParseSource(t *testing.T) {
+	cases := map[string]string{
+		"1080p WEB-DL AVC":  "WEB-DL",
+		"1080p BluRay x265": "BluRay",
+		"720p HDTV":         "HDTV",
+		"nothing here":      "",
+	}
+	for in, want := range cases {
+		if got := ParseSource(in); got != want {
+			t.Errorf("ParseSource(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestFilenameFromURL(t *testing.T) {
+	if got := FilenameFromURL("https://host/path/My.Show.S01E01.mkv?token=abc"); got != "My.Show.S01E01.mkv" {
+		t.Errorf("FilenameFromURL video = %q", got)
+	}
+	if got := FilenameFromURL("https://host/stream/12345"); got != "" {
+		t.Errorf("FilenameFromURL non-file should be empty, got %q", got)
 	}
 }

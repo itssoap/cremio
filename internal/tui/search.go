@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -40,6 +41,14 @@ type SearchModel struct {
 
 	// active search addon display name
 	addonName string
+
+	// last submitted query, used to reload results when the addon changes
+	lastQuery string
+
+	// unfiltered results plus per-type toggle state (category checkboxes)
+	allResults   []catalogItem
+	typeOrder    []string
+	enabledTypes map[string]bool
 
 	// addon selector popup
 	selectorActive  bool
@@ -86,7 +95,7 @@ func (m *SearchModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h
 	m.input.Width = w - 4
-	m.results.SetSize(w, h-7) // account for input (2 lines), help (1 line), spacing
+	m.results.SetSize(w, h-8) // input (2), category row (1), help (1), spacing
 }
 
 // resolveSearchAddon returns the addon URL to search with, falling back to
@@ -139,6 +148,7 @@ func (m SearchModel) loadAddonNames() tea.Cmd {
 
 func (m SearchModel) search(query string) tea.Cmd {
 	addonURL := m.resolveSearchAddon()
+	client := m.client
 	return func() tea.Msg {
 		if addonURL == "" {
 			return searchErrorMsg{err: fmt.Errorf("no addons installed")}
@@ -146,23 +156,29 @@ func (m SearchModel) search(query string) tea.Cmd {
 
 		ctx := context.Background()
 		queryLower := strings.ToLower(query)
-		var allItems []catalogItem
 
-		manifest, err := m.client.FetchManifest(ctx, addonURL)
+		manifest, err := client.FetchManifest(ctx, addonURL)
 		if err != nil {
 			return searchErrorMsg{err: fmt.Errorf("could not reach search addon: %w", err)}
 		}
 
-		for _, cat := range manifest.Catalogs {
-			if cat.SupportsSearch() {
-				resp, err := m.client.SearchCatalog(ctx, addonURL, cat.Type, cat.ID, query)
-				if err != nil {
-					continue
+		// Fetch every relevant catalog concurrently, preserving catalog order.
+		results := make([][]catalogItem, len(manifest.Catalogs))
+		var wg sync.WaitGroup
+		for i, cat := range manifest.Catalogs {
+			wg.Add(1)
+			go func(i int, cat stremio.Catalog) {
+				defer wg.Done()
+				if cat.SupportsSearch() {
+					resp, err := client.SearchCatalog(ctx, addonURL, cat.Type, cat.ID, query)
+					if err != nil {
+						return
+					}
+					for _, meta := range resp.Metas {
+						results[i] = append(results[i], catalogItem{meta: meta, baseURL: addonURL})
+					}
+					return
 				}
-				for _, meta := range resp.Metas {
-					allItems = append(allItems, catalogItem{meta: meta, baseURL: addonURL})
-				}
-			} else {
 				hasRequired := false
 				for _, e := range cat.Extra {
 					if e.IsRequired {
@@ -171,18 +187,24 @@ func (m SearchModel) search(query string) tea.Cmd {
 					}
 				}
 				if hasRequired {
-					continue
+					return
 				}
-				resp, err := m.client.FetchCatalog(ctx, addonURL, cat.Type, cat.ID)
+				resp, err := client.FetchCatalog(ctx, addonURL, cat.Type, cat.ID)
 				if err != nil {
-					continue
+					return
 				}
 				for _, meta := range resp.Metas {
 					if strings.Contains(strings.ToLower(meta.Name), queryLower) {
-						allItems = append(allItems, catalogItem{meta: meta, baseURL: addonURL})
+						results[i] = append(results[i], catalogItem{meta: meta, baseURL: addonURL})
 					}
 				}
-			}
+			}(i, cat)
+		}
+		wg.Wait()
+
+		var allItems []catalogItem
+		for _, r := range results {
+			allItems = append(allItems, r...)
 		}
 
 		if len(allItems) == 0 {
@@ -209,6 +231,61 @@ func dedupeByID(items []catalogItem) []catalogItem {
 	return out
 }
 
+// rebuildTypes recomputes the distinct content types present in the current
+// results, enabling any newly seen type by default (all categories on).
+func (m *SearchModel) rebuildTypes() {
+	if m.enabledTypes == nil {
+		m.enabledTypes = make(map[string]bool)
+	}
+	seen := make(map[string]bool)
+	m.typeOrder = m.typeOrder[:0]
+	for _, it := range m.allResults {
+		t := it.meta.Type
+		if t == "" {
+			t = "other"
+		}
+		if !seen[t] {
+			seen[t] = true
+			m.typeOrder = append(m.typeOrder, t)
+			if _, ok := m.enabledTypes[t]; !ok {
+				m.enabledTypes[t] = true
+			}
+		}
+	}
+}
+
+// applyTypeFilter populates the results list, keeping only enabled categories.
+func (m *SearchModel) applyTypeFilter() {
+	var items []list.Item
+	for _, it := range m.allResults {
+		t := it.meta.Type
+		if t == "" {
+			t = "other"
+		}
+		if m.enabledTypes[t] {
+			items = append(items, it)
+		}
+	}
+	m.results.SetItems(items)
+}
+
+// typeLabel returns a friendly display name for a content type.
+func typeLabel(t string) string {
+	switch t {
+	case "movie":
+		return "Movies"
+	case "series":
+		return "Series"
+	case "channel":
+		return "Channels"
+	case "tv":
+		return "TV"
+	case "other", "":
+		return "Other"
+	}
+	return strings.ToUpper(t[:1]) + t[1:]
+}
+
 func (m SearchModel) Update(msg tea.Msg) (SearchModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case searchAddonNameMsg:
@@ -229,11 +306,9 @@ func (m SearchModel) Update(msg tea.Msg) (SearchModel, tea.Cmd) {
 
 	case searchResultsMsg:
 		m.searching = false
-		items := make([]list.Item, len(msg.items))
-		for i, item := range msg.items {
-			items[i] = item
-		}
-		m.results.SetItems(items)
+		m.allResults = msg.items
+		m.rebuildTypes()
+		m.applyTypeFilter()
 		return m, nil
 
 	case searchErrorMsg:
@@ -264,10 +339,18 @@ func (m SearchModel) Update(msg tea.Msg) (SearchModel, tea.Cmd) {
 			case "enter":
 				if !m.selectorLoading && len(m.selectorItems) > 0 {
 					selected := m.selectorItems[m.selectorCursor]
+					changed := selected.url != m.config.SearchAddon
 					m.config.SearchAddon = selected.url
 					_ = m.config.Save()
 					m.addonName = ""
 					m.selectorActive = false
+					// If a query was already run, reload results against the
+					// newly selected addon.
+					if changed && m.lastQuery != "" {
+						m.searching = true
+						m.err = nil
+						return m, tea.Batch(m.loadAddonName(), m.spinner.Tick, m.search(m.lastQuery))
+					}
 					return m, m.loadAddonName()
 				}
 			case "esc":
@@ -285,6 +368,7 @@ func (m SearchModel) Update(msg tea.Msg) (SearchModel, tea.Cmd) {
 					m.input.Blur()
 					m.searching = true
 					m.err = nil
+					m.lastQuery = query
 					return m, tea.Batch(m.spinner.Tick, m.search(query))
 				}
 				return m, nil
@@ -303,6 +387,15 @@ func (m SearchModel) Update(msg tea.Msg) (SearchModel, tea.Cmd) {
 				m.selectorLoading = true
 				m.selectorItems = nil
 				return m, m.loadAddonNames()
+			case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+				// Toggle a category checkbox by its index.
+				idx := int(msg.String()[0] - '1')
+				if idx >= 0 && idx < len(m.typeOrder) {
+					t := m.typeOrder[idx]
+					m.enabledTypes[t] = !m.enabledTypes[t]
+					m.applyTypeFilter()
+				}
+				return m, nil
 			case "enter":
 				if item, ok := m.results.SelectedItem().(catalogItem); ok {
 					return m, func() tea.Msg {
@@ -359,6 +452,19 @@ func (m SearchModel) View() string {
 	var sections []string
 	sections = append(sections, m.input.View())
 
+	// Category checkboxes (only once results with types exist)
+	if len(m.typeOrder) > 0 && !m.searching && m.err == nil {
+		var parts []string
+		for i, t := range m.typeOrder {
+			check := "[ ]"
+			if m.enabledTypes[t] {
+				check = "[x]"
+			}
+			parts = append(parts, fmt.Sprintf("%d:%s %s", i+1, check, typeLabel(t)))
+		}
+		sections = append(sections, SubtitleStyle.Render(strings.Join(parts, "   ")))
+	}
+
 	if m.searching {
 		sections = append(sections, "\n"+m.spinner.View()+" Searching...")
 	} else if m.err != nil {
@@ -371,7 +477,7 @@ func (m SearchModel) View() string {
 	if m.addonName != "" {
 		via = m.addonName
 	}
-	help := HelpStyle.Render(fmt.Sprintf("/: focus search • enter: submit • esc: unfocus • s: search addon • D: downloads • q: quit  via: %s", via))
+	help := HelpStyle.Render(fmt.Sprintf("/: search • s: addon • 1-9: toggle category • D: downloads • q: quit  via: %s", via))
 	sections = append(sections, help)
 
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)

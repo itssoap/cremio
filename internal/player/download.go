@@ -1,6 +1,7 @@
 package player
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -30,18 +31,21 @@ const (
 
 // DownloadJob represents a single download in the queue.
 type DownloadJob struct {
-	ID          int
-	Label       string // e.g. "S01E05 - Gray Matter"
-	URL         string
-	DestPath    string
-	State       DownloadState
-	BytesRead   int64
-	TotalBytes  int64 // -1 if unknown
-	Speed       int64 // bytes/sec
-	Err         error
-	SkipReason  string
-	StartedAt   time.Time
-	FinishedAt  time.Time
+	ID         int
+	Label      string // the file name being downloaded
+	URL        string
+	DestPath   string
+	State      DownloadState
+	Phase      string // "connecting", "allocating", "downloading"
+	BytesRead  int64
+	TotalBytes int64 // -1 if unknown
+	Speed      int64 // bytes/sec
+	ETA        string
+	Conns      int
+	Err        error
+	SkipReason string
+	StartedAt  time.Time
+	FinishedAt time.Time
 }
 
 func (j *DownloadJob) Progress() float64 {
@@ -134,6 +138,17 @@ func (dm *DownloadManager) QueuedCount() int {
 	return count
 }
 
+// FreeSlots returns how many more jobs can start concurrently.
+func (dm *DownloadManager) FreeSlots() int {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	n := dm.parallel - dm.active
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
 // CancelJob cancels a specific job (marks queued as cancelled, or cancels active via context).
 func (dm *DownloadManager) CancelJob(id int) {
 	dm.mu.Lock()
@@ -180,8 +195,8 @@ func (dm *DownloadManager) ClearDone() {
 	dm.jobs = kept
 }
 
-// ProcessQueue processes the next available queued job. Returns true if a job was started.
-// This should be called repeatedly via tea.Cmd.
+// ProcessQueue processes the next available queued job. Returns the job that was
+// started (now finished), or nil if none was available.
 func (dm *DownloadManager) ProcessQueue(ctx context.Context) (*DownloadJob, error) {
 	dm.mu.Lock()
 	if dm.active >= dm.parallel {
@@ -200,15 +215,21 @@ func (dm *DownloadManager) ProcessQueue(ctx context.Context) (*DownloadJob, erro
 		return nil, nil
 	}
 	job.State = StateActive
+	job.Phase = "connecting"
 	job.StartedAt = time.Now()
 	dm.active++
 
-	// Create per-job cancel context
 	jobCtx, cancel := context.WithCancel(ctx)
 	dm.cancelFns[job.ID] = cancel
 	dm.mu.Unlock()
 
-	// Check if file already exists
+	// Validate destination path early so a bad path (e.g. an unusable
+	// directory) fails the job cleanly instead of crashing the app.
+	if job.DestPath == "" {
+		dm.finish(job, cancel, fmt.Errorf("empty destination path"), jobCtx)
+		return job, nil
+	}
+
 	if _, err := os.Stat(job.DestPath); err == nil {
 		dm.mu.Lock()
 		job.State = StateSkipped
@@ -221,27 +242,34 @@ func (dm *DownloadManager) ProcessQueue(ctx context.Context) (*DownloadJob, erro
 		return job, nil
 	}
 
-	// Create parent directories
 	dir := filepath.Dir(job.DestPath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		dm.mu.Lock()
-		job.State = StateFailed
-		job.Err = fmt.Errorf("create directory: %w", err)
-		job.FinishedAt = time.Now()
-		dm.active--
-		delete(dm.cancelFns, job.ID)
-		dm.mu.Unlock()
-		cancel()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		dm.finish(job, cancel, fmt.Errorf("create directory: %w", err), jobCtx)
 		return job, nil
 	}
 
 	var err error
-	if dm.aria2cPath != "" {
-		err = dm.downloadWithAria2c(jobCtx, job)
-	} else {
-		err = dm.downloadHTTP(jobCtx, job)
-	}
+	func() {
+		// Guard against any unexpected panic in a backend so a single bad
+		// download can never take down the whole application.
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("download error: %v", r)
+			}
+		}()
+		if dm.aria2cPath != "" {
+			err = dm.downloadWithAria2c(jobCtx, job)
+		} else {
+			err = dm.downloadHTTP(jobCtx, job)
+		}
+	}()
 
+	dm.finish(job, cancel, err, jobCtx)
+	return job, nil
+}
+
+// finish records the terminal state of a job.
+func (dm *DownloadManager) finish(job *DownloadJob, cancel context.CancelFunc, err error, jobCtx context.Context) {
 	dm.mu.Lock()
 	if err != nil {
 		if jobCtx.Err() != nil {
@@ -252,14 +280,13 @@ func (dm *DownloadManager) ProcessQueue(ctx context.Context) (*DownloadJob, erro
 		}
 	} else {
 		job.State = StateDone
+		job.Phase = ""
 	}
 	job.FinishedAt = time.Now()
 	dm.active--
 	delete(dm.cancelFns, job.ID)
 	dm.mu.Unlock()
 	cancel()
-
-	return job, nil
 }
 
 func (dm *DownloadManager) downloadHTTP(ctx context.Context, job *DownloadJob) error {
@@ -281,6 +308,7 @@ func (dm *DownloadManager) downloadHTTP(ctx context.Context, job *DownloadJob) e
 
 	dm.mu.Lock()
 	job.TotalBytes = resp.ContentLength
+	job.Phase = "downloading"
 	dm.mu.Unlock()
 
 	tmpPath := job.DestPath + ".part"
@@ -311,7 +339,7 @@ func (dm *DownloadManager) downloadHTTP(ctx context.Context, job *DownloadJob) e
 			now := time.Now()
 			if now.Sub(lastUpdate) > 500*time.Millisecond {
 				elapsed := now.Sub(lastUpdate).Seconds()
-				if elapsed > 0 {
+				if elapsed > 0 && !lastUpdate.IsZero() {
 					job.Speed = int64(float64(job.BytesRead-lastBytes) / elapsed)
 				}
 				lastUpdate = now
@@ -336,70 +364,153 @@ func (dm *DownloadManager) downloadHTTP(ctx context.Context, job *DownloadJob) e
 	return nil
 }
 
+// aria2ProgressRe parses aria2c console progress lines such as:
+//
+//	[#7d0cf1 12MiB/1.2GiB(1%) CN:16 DL:5.2MiB ETA:3m52s]
+var (
+	aria2SizeRe  = regexp.MustCompile(`([0-9.]+[KMGT]?i?B)/([0-9.]+[KMGT]?i?B)\((\d+)%\)`)
+	aria2DLRe    = regexp.MustCompile(`DL:([0-9.]+[KMGT]?i?B)`)
+	aria2ETARe   = regexp.MustCompile(`ETA:([0-9smhd]+)`)
+	aria2CNRe    = regexp.MustCompile(`CN:(\d+)`)
+	aria2AllocRe = regexp.MustCompile(`(?i)FileAlloc|Allocat`)
+)
+
 func (dm *DownloadManager) downloadWithAria2c(ctx context.Context, job *DownloadJob) error {
-	tmpDir := filepath.Dir(job.DestPath)
-	tmpName := filepath.Base(job.DestPath)
+	dir := filepath.Dir(job.DestPath)
+	name := filepath.Base(job.DestPath)
 
 	args := []string{
 		"-x", "16",
 		"-s", "16",
 		"-k", "1M",
-		"--dir", tmpDir,
-		"--out", tmpName,
-		"--console-log-level=error",
+		"--dir", dir,
+		"--out", name,
+		// Skip slow pre-allocation so large files start downloading
+		// immediately instead of stalling on file allocation.
+		"--file-allocation=none",
+		"--auto-file-renaming=false",
+		"--allow-overwrite=true",
+		"--console-log-level=warn",
 		"--summary-interval=1",
 		"--download-result=hide",
 		job.URL,
 	}
 
 	cmd := exec.CommandContext(ctx, dm.aria2cPath, args...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("aria2c pipe: %w", err)
+	}
+	cmd.Stderr = cmd.Stdout
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("aria2c start: %w", err)
 	}
 
-	// Poll file size for progress
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		var lastSize int64
-		var lastTime time.Time
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				info, err := os.Stat(filepath.Join(tmpDir, tmpName))
-				if err != nil {
-					// aria2c may use .aria2 suffix during download
-					info, err = os.Stat(filepath.Join(tmpDir, tmpName+".aria2"))
-					if err != nil {
-						continue
-					}
-				}
-				now := time.Now()
-				size := info.Size()
-				dm.mu.Lock()
-				job.BytesRead = size
-				if !lastTime.IsZero() {
-					elapsed := now.Sub(lastTime).Seconds()
-					if elapsed > 0 {
-						job.Speed = int64(float64(size-lastSize) / elapsed)
-					}
-				}
-				dm.mu.Unlock()
-				lastSize = size
-				lastTime = now
-			}
-		}
-	}()
+	dm.mu.Lock()
+	job.Phase = "downloading"
+	dm.mu.Unlock()
 
-	return cmd.Wait()
+	dm.scanAria2Output(job, stdout)
+
+	if waitErr := cmd.Wait(); waitErr != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("aria2c: %w", waitErr)
+	}
+	return nil
 }
 
-// --- Utility functions ---
+// scanAria2Output reads aria2c's console output (which uses \r to refresh the
+// progress line) and updates the job's live progress fields.
+func (dm *DownloadManager) scanAria2Output(job *DownloadJob, r io.Reader) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	sc.Split(scanLinesCR)
+	for sc.Scan() {
+		line := sc.Text()
+		if aria2AllocRe.MatchString(line) {
+			dm.mu.Lock()
+			job.Phase = "allocating"
+			dm.mu.Unlock()
+		}
+		if m := aria2SizeRe.FindStringSubmatch(line); m != nil {
+			read := parseAria2Size(m[1])
+			total := parseAria2Size(m[2])
+			dm.mu.Lock()
+			if read > 0 {
+				job.BytesRead = read
+			}
+			if total > 0 {
+				job.TotalBytes = total
+			}
+			job.Phase = "downloading"
+			dm.mu.Unlock()
+		}
+		if m := aria2DLRe.FindStringSubmatch(line); m != nil {
+			dm.mu.Lock()
+			job.Speed = parseAria2Size(m[1])
+			dm.mu.Unlock()
+		}
+		if m := aria2ETARe.FindStringSubmatch(line); m != nil {
+			dm.mu.Lock()
+			job.ETA = m[1]
+			dm.mu.Unlock()
+		}
+		if m := aria2CNRe.FindStringSubmatch(line); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			dm.mu.Lock()
+			job.Conns = n
+			dm.mu.Unlock()
+		}
+	}
+}
+
+// scanLinesCR is a bufio.SplitFunc that splits on either \n or \r so aria2c's
+// carriage-return progress refreshes are seen as individual tokens.
+func scanLinesCR(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+// parseAria2Size converts an aria2 size token like "1.2GiB", "512MiB",
+// "5.0KiB" or "123B" to bytes.
+func parseAria2Size(s string) int64 {
+	s = strings.TrimSpace(s)
+	re := regexp.MustCompile(`^([0-9.]+)\s*([KMGT]?)i?B$`)
+	m := re.FindStringSubmatch(s)
+	if m == nil {
+		return 0
+	}
+	val, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0
+	}
+	switch m[2] {
+	case "T":
+		val *= 1024 * 1024 * 1024 * 1024
+	case "G":
+		val *= 1024 * 1024 * 1024
+	case "M":
+		val *= 1024 * 1024
+	case "K":
+		val *= 1024
+	}
+	return int64(val)
+}
+
+// --- Path helpers ---
 
 // SanitizePath removes characters invalid in file/directory names.
 func SanitizePath(s string) string {
@@ -415,44 +526,44 @@ func SanitizePath(s string) string {
 			b.WriteRune(r)
 		}
 	}
-	return strings.TrimSpace(b.String())
+	// Trim trailing dots/spaces which are illegal in Windows names.
+	return strings.TrimRight(strings.TrimSpace(b.String()), ". ")
 }
 
 // yearRe matches the first standalone 4-digit year in a string.
 var yearRe = regexp.MustCompile(`\d{4}`)
 
 // normalizeYear extracts the first 4-digit year from a release-info string.
-// Series often report a range like "2008-2013" (with an en-dash or other
-// separator); Plex uses only the first air year for the show folder.
 func normalizeYear(year string) string {
 	return yearRe.FindString(year)
 }
 
-// PlexMoviePath returns: <base>/Movies/<Name> (<Year>)/<Name> (<Year>).<ext>
-func PlexMoviePath(base, name, year, ext string) string {
+// titledFolder builds "<Name> (<Year>)" or just "<Name>" when year is absent.
+func titledFolder(name, year string) string {
 	year = normalizeYear(year)
 	folder := SanitizePath(name)
 	if year != "" {
 		folder = fmt.Sprintf("%s (%s)", SanitizePath(name), year)
 	}
-	filename := folder + ext
-	return filepath.Join(base, "Movies", folder, filename)
+	if folder == "" {
+		folder = "Unknown"
+	}
+	return folder
 }
 
-// PlexEpisodePath returns: <base>/TV Shows/<Show> (<Year>)/Season XX/<Show> - SXXEXX - Title.<ext>
-func PlexEpisodePath(base, showName, year string, season, episode int, epTitle, ext string) string {
-	year = normalizeYear(year)
-	show := SanitizePath(showName)
-	if year != "" {
-		show = fmt.Sprintf("%s (%s)", SanitizePath(showName), year)
-	}
+// MoviePath returns: <base>/<Name> (<Year>)/<filename>
+// The original filename is preserved verbatim (only sanitized).
+func MoviePath(base, name, year, filename string) string {
+	folder := titledFolder(name, year)
+	return filepath.Join(base, folder, SanitizePath(filename))
+}
+
+// EpisodePath returns: <base>/<Show> (<Year>)/Season XX/<filename>
+// The original filename is preserved verbatim (only sanitized).
+func EpisodePath(base, showName, year string, season int, filename string) string {
+	folder := titledFolder(showName, year)
 	seasonDir := fmt.Sprintf("Season %02d", season)
-	filename := fmt.Sprintf("%s - S%02dE%02d", show, season, episode)
-	if epTitle != "" {
-		filename += " - " + SanitizePath(epTitle)
-	}
-	filename += ext
-	return filepath.Join(base, "TV Shows", show, seasonDir, filename)
+	return filepath.Join(base, folder, seasonDir, SanitizePath(filename))
 }
 
 // GuessExtension extracts file extension from URL, defaults to .mkv.
@@ -465,6 +576,22 @@ func GuessExtension(url string) string {
 		return ext
 	}
 	return ".mkv"
+}
+
+// FilenameFromURL returns the last path segment of a URL if it looks like a
+// video file, else "".
+func FilenameFromURL(url string) string {
+	clean := strings.SplitN(url, "?", 2)[0]
+	clean = strings.SplitN(clean, "#", 2)[0]
+	base := clean
+	if i := strings.LastIndexAny(clean, "/\\"); i >= 0 {
+		base = clean[i+1:]
+	}
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".mkv", ".mp4", ".avi", ".webm", ".ts":
+		return base
+	}
+	return ""
 }
 
 // ExtractReleaseGroup pulls release group from stream name.
@@ -500,6 +627,28 @@ func ParseResolution(texts ...string) string {
 		return "720p"
 	case strings.Contains(lower, "480p"):
 		return "480p"
+	}
+	return ""
+}
+
+// ParseSource extracts the file source (WEB-DL, BluRay, etc.) from stream text.
+func ParseSource(texts ...string) string {
+	lower := strings.ToLower(strings.Join(texts, " "))
+	switch {
+	case strings.Contains(lower, "bluray") || strings.Contains(lower, "blu-ray") || strings.Contains(lower, "bdrip"):
+		return "BluRay"
+	case strings.Contains(lower, "web-dl") || strings.Contains(lower, "webdl"):
+		return "WEB-DL"
+	case strings.Contains(lower, "webrip"):
+		return "WEBRip"
+	case strings.Contains(lower, "web"):
+		return "WEB"
+	case strings.Contains(lower, "hdtv"):
+		return "HDTV"
+	case strings.Contains(lower, "dvdrip") || strings.Contains(lower, "dvd"):
+		return "DVD"
+	case strings.Contains(lower, "cam") || strings.Contains(lower, "hdcam"):
+		return "CAM"
 	}
 	return ""
 }

@@ -137,7 +137,25 @@ type Stream struct {
 type StreamBehaviorHints struct {
 	NotWebReady  bool          `json:"notWebReady,omitempty"`
 	BingeGroup   string        `json:"bingeGroup,omitempty"`
+	Filename     string        `json:"filename,omitempty"`
+	VideoSize    int64         `json:"videoSize,omitempty"`
 	ProxyHeaders *ProxyHeaders `json:"proxyHeaders,omitempty"`
+}
+
+// Filename returns the addon-provided real filename for the stream, if any.
+func (s Stream) Filename() string {
+	if s.BehaviorHints != nil {
+		return s.BehaviorHints.Filename
+	}
+	return ""
+}
+
+// VideoSize returns the addon-provided exact file size in bytes, or 0.
+func (s Stream) VideoSize() int64 {
+	if s.BehaviorHints != nil {
+		return s.BehaviorHints.VideoSize
+	}
+	return 0
 }
 
 type ProxyHeaders struct {

@@ -20,6 +20,7 @@ const (
 	ScreenHome Screen = iota
 	ScreenSearch
 	ScreenAddons
+	ScreenFilters
 	ScreenHistory
 	ScreenDetail
 	ScreenStreams
@@ -40,6 +41,7 @@ type App struct {
 	home       HomeModel
 	search     SearchModel
 	addons     AddonsModel
+	filters    GlobalFiltersModel
 	historyTab HistoryModel
 	detail     DetailModel
 	streams    StreamsModel
@@ -71,6 +73,7 @@ func NewApp(cfg *config.Config, hist *history.WatchHistory, incognito bool) App 
 		home:       NewHomeModel(client, cfg),
 		search:     NewSearchModel(client, cfg),
 		addons:     NewAddonsModel(client, cfg),
+		filters:    NewGlobalFiltersModel(cfg),
 		historyTab: NewHistoryModel(hist, client, cfg),
 		detail:     detail,
 		streams:    NewStreamsModel(client, cfg),
@@ -91,6 +94,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.home.SetSize(msg.Width-4, contentHeight)
 		a.search.SetSize(msg.Width-4, contentHeight)
 		a.addons.SetSize(msg.Width-4, contentHeight)
+		a.filters.SetSize(msg.Width-4, contentHeight)
 		a.historyTab.SetSize(msg.Width-4, contentHeight)
 		a.detail.SetSize(msg.Width-4, contentHeight)
 		a.streams.SetSize(msg.Width-4, contentHeight)
@@ -124,6 +128,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.screen == ScreenStreams && (a.streams.filterActive || a.streams.rgSelectorActive || a.streams.rgEpSelectorActive) {
 				break
 			}
+			if a.screen == ScreenFilters && a.filters.editingInput() {
+				break
+			}
 			// Don't treat "q" as quit while typing in a list's built-in filter.
 			if msg.String() == "q" && a.listFiltering() {
 				break
@@ -141,6 +148,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			if a.screen == ScreenStreams {
+				a.streams.loading = false
 				a.screen = ScreenDetail
 				return a, nil
 			}
@@ -161,6 +169,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			if a.screen == ScreenSearch && a.search.inputFocused {
+				break
+			}
+			if a.screen == ScreenFilters && a.filters.editingInput() {
 				break
 			}
 			switch a.screen {
@@ -187,6 +198,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.screen = ScreenAddons
 				return a, nil
 			case ScreenAddons:
+				a.screen = ScreenFilters
+				return a, nil
+			case ScreenFilters:
 				a.screen = ScreenHome
 				return a, a.home.Init()
 			}
@@ -289,23 +303,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case enqueueDownloadsMsg:
 		// Batch download: enqueue selected episodes from chosen release group
-		downloadDir := a.config.DownloadDir
-		if downloadDir == "" {
-			downloadDir = "."
-		}
+		downloadDir := a.config.ResolveDownloadDir()
 		count := a.streams.enqueueBatchDownload(a.dlMgr, a.streams.rgSelectedGroup, downloadDir)
-		a.streams.downloadMsg = fmt.Sprintf("⬇ Queued %d episodes (press D to view downloads)", count)
 		a.streams.resetDownloadState()
-		a.streams.downloadMsg = fmt.Sprintf("⬇ Queued %d episodes (press D to view downloads)", count)
+		a.streams.downloadMsg = fmt.Sprintf("Queued %d file(s) (press D to view downloads)", count)
 		return a, a.processDownloadQueue()
 
 	case enqueueSingleDownloadMsg:
-		downloadDir := a.config.DownloadDir
-		if downloadDir == "" {
-			downloadDir = "."
-		}
+		downloadDir := a.config.ResolveDownloadDir()
 		a.streams.enqueueSingleDownload(a.dlMgr, msg.item, downloadDir)
-		a.streams.downloadMsg = "⬇ Queued download (press D to view)"
+		a.streams.downloadMsg = "Queued download (press D to view)"
 		return a, a.processDownloadQueue()
 
 	case downloadTickMsg:
@@ -325,6 +332,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.search, cmd = a.search.Update(msg)
 	case ScreenAddons:
 		a.addons, cmd = a.addons.Update(msg)
+	case ScreenFilters:
+		a.filters, cmd = a.filters.Update(msg)
 	case ScreenHistory:
 		a.historyTab, cmd = a.historyTab.Update(msg)
 	case ScreenDetail:
@@ -354,6 +363,8 @@ func (a App) View() string {
 		content = a.search.View()
 	case ScreenAddons:
 		content = a.addons.View()
+	case ScreenFilters:
+		content = a.filters.View()
 	case ScreenHistory:
 		content = a.historyTab.View()
 	case ScreenDetail:
@@ -420,25 +431,39 @@ func (a App) isTyping() bool {
 	if a.screen == ScreenStreams && a.streams.filterActive {
 		return true
 	}
+	if a.screen == ScreenFilters && a.filters.editingInput() {
+		return true
+	}
 	return a.listFiltering()
 }
 
-// processDownloadQueue starts processing the next download job if capacity allows.
+// processDownloadQueue starts as many queued jobs as capacity allows and keeps
+// a UI refresh tick running while anything is active or queued.
 func (a App) processDownloadQueue() tea.Cmd {
-	if a.dlMgr.QueuedCount() == 0 && a.dlMgr.ActiveCount() == 0 {
+	queued := a.dlMgr.QueuedCount()
+	active := a.dlMgr.ActiveCount()
+	if queued == 0 && active == 0 {
 		return nil
 	}
-	if a.dlMgr.QueuedCount() == 0 {
-		// Active downloads running; schedule a tick to refresh UI
-		return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
-			return downloadTickMsg{}
+
+	var cmds []tea.Cmd
+	slots := a.dlMgr.FreeSlots()
+	starts := slots
+	if queued < starts {
+		starts = queued
+	}
+	for i := 0; i < starts; i++ {
+		mgr := a.dlMgr
+		cmds = append(cmds, func() tea.Msg {
+			_, _ = mgr.ProcessQueue(context.Background())
+			return downloadJobDoneMsg{}
 		})
 	}
-	mgr := a.dlMgr
-	return func() tea.Msg {
-		_, _ = mgr.ProcessQueue(context.Background())
-		return downloadJobDoneMsg{}
-	}
+	// Refresh tick so progress and finished jobs surface promptly.
+	cmds = append(cmds, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+		return downloadTickMsg{}
+	}))
+	return tea.Batch(cmds...)
 }
 
 func (a App) renderTabs() string {
@@ -450,7 +475,7 @@ func (a App) renderTabs() string {
 	if a.hasHistory() {
 		tabs = append(tabs, tab{"History", ScreenHistory})
 	}
-	tabs = append(tabs, tab{"Search", ScreenSearch}, tab{"Addons", ScreenAddons})
+	tabs = append(tabs, tab{"Search", ScreenSearch}, tab{"Addons", ScreenAddons}, tab{"Filters", ScreenFilters})
 
 	var rendered []string
 	if a.incognito {

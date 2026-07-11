@@ -29,6 +29,18 @@ func NewDownloadsModel(mgr *player.DownloadManager) DownloadsModel {
 	return DownloadsModel{manager: mgr}
 }
 
+// truncateLabel shortens a filename to n runes with an ellipsis.
+func truncateLabel(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n <= 1 {
+		return string(r[:n])
+	}
+	return string(r[:n-1]) + "…"
+}
+
 func (m *DownloadsModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h
@@ -160,16 +172,33 @@ func (m DownloadsModel) View() string {
 			}
 
 			var line string
+			label := truncateLabel(j.Label, 32)
 			switch j.State {
 			case player.StateQueued:
-				line = fmt.Sprintf("%s── %s  queued", cursor, j.Label)
+				line = fmt.Sprintf("%s── %s  queued", cursor, label)
 			case player.StateActive:
-				bar := m.progressBar(j, w-len(cursor)-len(j.Label)-20)
+				if j.Phase == "connecting" {
+					line = fmt.Sprintf("%s⤷ %s  connecting...", cursor, label)
+					break
+				}
+				if j.Phase == "allocating" {
+					line = fmt.Sprintf("%s⤷ %s  allocating file...", cursor, label)
+					break
+				}
+				bar := m.progressBar(j, 18)
 				speed := player.FormatBytes(j.Speed) + "/s"
-				line = fmt.Sprintf("%s⬇ %s  %s  %s", cursor, j.Label, bar, speed)
+				extra := speed
+				if j.ETA != "" {
+					extra += "  ETA " + j.ETA
+				}
+				if j.TotalBytes > 0 {
+					extra = fmt.Sprintf("%s/%s  %s",
+						player.FormatBytes(j.BytesRead), player.FormatBytes(j.TotalBytes), extra)
+				}
+				line = fmt.Sprintf("%s⤷ %s  %s  %s", cursor, label, bar, extra)
 			case player.StateDone:
 				size := player.FormatBytes(j.BytesRead)
-				line = fmt.Sprintf("%s✓ %s  %s  done", cursor, j.Label, size)
+				line = fmt.Sprintf("%s✓ %s  %s  done", cursor, label, size)
 			case player.StateFailed:
 				errMsg := ""
 				if j.Err != nil {
@@ -178,11 +207,11 @@ func (m DownloadsModel) View() string {
 						errMsg = errMsg[:30] + "..."
 					}
 				}
-				line = fmt.Sprintf("%s✗ %s  %s", cursor, j.Label, errMsg)
+				line = fmt.Sprintf("%s✗ %s  %s", cursor, label, errMsg)
 			case player.StateCancelled:
-				line = fmt.Sprintf("%s⊘ %s  cancelled", cursor, j.Label)
+				line = fmt.Sprintf("%s⊘ %s  cancelled", cursor, label)
 			case player.StateSkipped:
-				line = fmt.Sprintf("%s⊘ %s  %s", cursor, j.Label, j.SkipReason)
+				line = fmt.Sprintf("%s⊘ %s  %s", cursor, label, j.SkipReason)
 			}
 
 			if i == m.cursor {
