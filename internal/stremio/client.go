@@ -84,6 +84,10 @@ func (c *Client) getJSON(ctx context.Context, u string, target any) error {
 	if err != nil {
 		return err
 	}
+	// Some addons (e.g. torrentio) sit behind Cloudflare, which rejects
+	// Go's default User-Agent with HTTP 403.
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
