@@ -89,3 +89,18 @@ func TestFilenameFromURL(t *testing.T) {
 		t.Errorf("FilenameFromURL non-file should be empty, got %q", got)
 	}
 }
+
+func TestParseCodec(t *testing.T) {
+	cases := map[string]string{
+		"1080p WEB-DL x265 HEVC":  "HEVC",
+		"1080p BluRay H.264 AVC":  "AVC",
+		"2160p WEB-DL AV1":        "AV1",
+		"1080p WEB-DL H264":       "AVC",
+		"1080p WEB-DL DDP5.1":     "",
+	}
+	for in, want := range cases {
+		if got := ParseCodec(in); got != want {
+			t.Errorf("ParseCodec(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

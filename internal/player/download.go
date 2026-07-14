@@ -653,6 +653,22 @@ func ParseSource(texts ...string) string {
 	return ""
 }
 
+// ParseCodec extracts the video codec from stream text (HEVC, AVC, AV1).
+func ParseCodec(texts ...string) string {
+	lower := strings.ToLower(strings.Join(texts, " "))
+	switch {
+	case strings.Contains(lower, "av1"):
+		return "AV1"
+	case strings.Contains(lower, "hevc") || strings.Contains(lower, "x265") ||
+		strings.Contains(lower, "h.265") || strings.Contains(lower, "h265"):
+		return "HEVC"
+	case strings.Contains(lower, "avc") || strings.Contains(lower, "x264") ||
+		strings.Contains(lower, "h.264") || strings.Contains(lower, "h264"):
+		return "AVC"
+	}
+	return ""
+}
+
 // ParseSize extracts file size from stream name/title (e.g. "4.2 GB", "850 MB").
 func ParseSize(texts ...string) (bytes int64, display string) {
 	combined := strings.Join(texts, " ")

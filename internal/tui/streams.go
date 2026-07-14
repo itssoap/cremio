@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -201,13 +202,14 @@ type enqueueDownloadsMsg struct{}
 type enqueueSingleDownloadMsg struct{ item streamItem }
 
 type episodeSelection struct {
-	label    string // e.g. "S01E05"
-	season   int
-	episode  int
-	epTitle  string
-	size     string // parsed size display
+	label     string // e.g. "S01E05"
+	season    int
+	episode   int
+	filename  string // actual file name (distinguishes v1 / v2 cuts)
+	url       string // resolved playable URL for this exact file
+	size      string // parsed size display
 	sizeBytes int64
-	selected bool
+	selected  bool
 }
 
 type releaseGroupInfo struct {
@@ -333,6 +335,12 @@ func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter)
 			streams []stremio.Stream
 		}
 		results := make([]res, len(nav.Videos)*len(addons))
+
+		// ponytail: fixed pool of 5. Aggregator addons (e.g. AIOStreams) return
+		// truncated/empty results when hit with episodes*addons requests at once,
+		// which silently drops whole episodes. Bounding concurrency keeps every
+		// episode's response intact. Make it configurable if throughput matters.
+		sem := make(chan struct{}, 5)
 		var wg sync.WaitGroup
 		for vi, video := range nav.Videos {
 			label := fmt.Sprintf("S%02dE%02d", video.Season, video.Episode)
@@ -341,8 +349,15 @@ func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter)
 				idx := vi*len(addons) + ai
 				go func(idx int, k key, label, videoID, addonURL string) {
 					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
 					r := res{key: k, label: label, videoID: videoID}
 					resp, err := client.FetchStreams(ctx, addonURL, nav.Type, videoID)
+					if err != nil {
+						// One retry: transient overload can drop a request entirely.
+						time.Sleep(300 * time.Millisecond)
+						resp, err = client.FetchStreams(ctx, addonURL, nav.Type, videoID)
+					}
 					if err == nil {
 						r.streams = resp.Streams
 					}
@@ -470,6 +485,25 @@ func (m *StreamsModel) isBatchMode() bool {
 	return false
 }
 
+// releaseVariant returns a stable identity for a specific release, combining
+// group, resolution, source and codec (e.g. "FLE - 1080p - BluRay - HEVC").
+// Grouping downloads by this instead of the bare release group ensures every
+// episode in a chosen group is the SAME encode, not an arbitrary mix of the
+// group's BluRay / WEB-DL / codec variants.
+func releaseVariant(s stremio.Stream) string {
+	parts := []string{player.ExtractReleaseGroup(s.Name)}
+	if res := player.ParseResolution(s.Name, s.Title, s.Description); res != "" {
+		parts = append(parts, res)
+	}
+	if src := player.ParseSource(s.Name, s.Title, s.Description); src != "" {
+		parts = append(parts, src)
+	}
+	if codec := player.ParseCodec(s.Name, s.Title, s.Description); codec != "" {
+		parts = append(parts, codec)
+	}
+	return strings.Join(parts, " - ")
+}
+
 // collectReleaseGroups extracts unique release groups with metadata from visible streams.
 func (m *StreamsModel) collectReleaseGroups() []releaseGroupInfo {
 	type groupData struct {
@@ -485,7 +519,7 @@ func (m *StreamsModel) collectReleaseGroups() []releaseGroupInfo {
 		if !ok {
 			continue
 		}
-		group := player.ExtractReleaseGroup(si.stream.Name)
+		group := releaseVariant(si.stream)
 		gd, exists := groups[group]
 		if !exists {
 			gd = &groupData{episodes: make(map[string]bool)}
@@ -515,78 +549,80 @@ func (m *StreamsModel) collectReleaseGroups() []releaseGroupInfo {
 	return result
 }
 
-// collectEpisodesForGroup builds the episode selector for a specific release group.
+// collectEpisodesForGroup builds the episode selector for a specific release
+// variant. Distinct files are kept per episode, so alternate cuts (S01E01 and
+// S01E01v2) both appear; only byte-identical duplicates (same file from another
+// source) are collapsed. Rows are sorted by season, episode, then filename.
 func (m *StreamsModel) collectEpisodesForGroup(group string) []episodeSelection {
 	seen := make(map[string]bool)
 	var eps []episodeSelection
 
 	for _, li := range m.list.Items() {
 		si, ok := li.(streamItem)
-		if !ok || si.episodeLabel == "" || seen[si.episodeLabel] {
+		if !ok || si.episodeLabel == "" {
 			continue
 		}
-		g := player.ExtractReleaseGroup(si.stream.Name)
-		if g != group {
+		if releaseVariant(si.stream) != group {
 			continue
 		}
 		url := si.stream.PlayableURL()
 		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 			continue
 		}
-		seen[si.episodeLabel] = true
-		sizeBytes, sizeDisplay := player.ParseSize(si.stream.Name, si.stream.Title)
-		// Parse season/episode from video ID
+		fname := si.fileName()
+		// Distinguish alternate cuts by file name; fall back to URL when the
+		// addon gives no name so genuine dups still collapse.
+		dedupKey := fname
+		if dedupKey == "" {
+			dedupKey = url
+		}
+		if seen[dedupKey] {
+			continue
+		}
+		seen[dedupKey] = true
+		sizeBytes, sizeDisplay := player.ParseSize(si.stream.Name, si.stream.Title, si.stream.Description)
+		if vs := si.stream.VideoSize(); vs > 0 {
+			sizeBytes = vs
+			sizeDisplay = player.FormatBytes(vs)
+		}
 		season, episode := history.ParseEpisodeID(si.videoID)
 		eps = append(eps, episodeSelection{
 			label:     si.episodeLabel,
 			season:    season,
 			episode:   episode,
-			epTitle:   "", // We don't have episode title here
+			filename:  fname,
+			url:       url,
 			size:      sizeDisplay,
 			sizeBytes: sizeBytes,
 			selected:  true,
 		})
 	}
-	return eps
-}
 
-// streamsForGroupAndEpisode finds the best HTTP stream for a release group and episode.
-func (m *StreamsModel) streamForGroupAndEpisode(group, label string) *streamItem {
-	for _, li := range m.list.Items() {
-		si, ok := li.(streamItem)
-		if !ok || si.episodeLabel != label {
-			continue
+	sort.SliceStable(eps, func(i, j int) bool {
+		if eps[i].season != eps[j].season {
+			return eps[i].season < eps[j].season
 		}
-		g := player.ExtractReleaseGroup(si.stream.Name)
-		if g != group {
-			continue
+		if eps[i].episode != eps[j].episode {
+			return eps[i].episode < eps[j].episode
 		}
-		url := si.stream.PlayableURL()
-		if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
-			return &si
-		}
-	}
-	return nil
+		return eps[i].filename < eps[j].filename
+	})
+	return eps
 }
 
 // enqueueBatchDownload enqueues selected episodes from a release group into the download manager.
 func (m *StreamsModel) enqueueBatchDownload(mgr *player.DownloadManager, group string, downloadDir string) int {
 	count := 0
 	for _, ep := range m.rgEpisodes {
-		if !ep.selected {
+		if !ep.selected || ep.url == "" {
 			continue
 		}
-		si := m.streamForGroupAndEpisode(group, ep.label)
-		if si == nil {
-			continue
-		}
-		url := si.stream.PlayableURL()
-		fname := si.fileName()
+		fname := ep.filename
 		if fname == "" {
-			fname = fmt.Sprintf("%s - %s%s", m.metaName, ep.label, player.GuessExtension(url))
+			fname = fmt.Sprintf("%s - %s%s", m.metaName, ep.label, player.GuessExtension(ep.url))
 		}
 		destPath := player.EpisodePath(downloadDir, m.metaName, m.metaYear, ep.season, fname)
-		mgr.Enqueue(fname, url, destPath)
+		mgr.Enqueue(fname, ep.url, destPath)
 		count++
 	}
 	return count
@@ -996,15 +1032,25 @@ func (m StreamsModel) episodeSelectorView() string {
 		if ep.selected {
 			check = "☑"
 		}
-		size := ""
+		size := "?"
 		if ep.size != "" {
-			size = fmt.Sprintf("  (%s)", ep.size)
+			size = ep.size
 		}
-		line := fmt.Sprintf("%s%s %s%s", cursor, check, ep.label, size)
+		// label + size, then the actual file name so alternate cuts (v2) and
+		// exact contents are visible before downloading.
+		head := fmt.Sprintf("%s%s %-7s %8s", cursor, check, ep.label, size)
+		fname := ep.filename
+		if fname != "" {
+			avail := m.width - lipgloss.Width(head) - 4
+			if avail < 12 {
+				avail = 12
+			}
+			head += "  " + truncateLabel(fname, avail)
+		}
 		if i == m.rgEpCursor {
-			b.WriteString(SubtitleStyle.Render(line))
+			b.WriteString(SubtitleStyle.Render(head))
 		} else {
-			b.WriteString(line)
+			b.WriteString(head)
 		}
 		b.WriteString("\n")
 	}
@@ -1036,15 +1082,11 @@ func (m StreamsModel) releaseGroupSelectorView() string {
 		if i == m.rgCursor {
 			cursor = "▶ "
 		}
-		res := g.resolution
-		if res == "" {
-			res = "?"
-		}
 		size := ""
 		if g.totalSize > 0 {
 			size = fmt.Sprintf(" │ ~%s", player.FormatBytes(g.totalSize))
 		}
-		line := fmt.Sprintf("%s%-20s %6s │ %d eps%s", cursor, g.name, res, g.epCount, size)
+		line := fmt.Sprintf("%s%-34s │ %d eps%s", cursor, g.name, g.epCount, size)
 		if i == m.rgCursor {
 			b.WriteString(SubtitleStyle.Render(line))
 		} else {

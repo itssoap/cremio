@@ -102,6 +102,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
+		// Global quit. ctrl+c always quits; q quits from anywhere except while
+		// typing into a text field. Handled before popup routing so q also quits
+		// from the downloads popup and the release-group/episode selectors.
+		if msg.String() == "ctrl+c" {
+			return a, tea.Quit
+		}
+		if msg.String() == "q" && !a.isTyping() {
+			return a, tea.Quit
+		}
 		// Global: toggle downloads popup
 		if msg.String() == "D" && !a.isTyping() {
 			a.downloads.Toggle()
@@ -115,28 +124,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "ctrl+c", "q":
-			if a.downloads.IsVisible() {
-				break
-			}
-			if a.screen == ScreenAddons && a.addons.inputActive {
-				break
-			}
-			if a.screen == ScreenSearch && a.search.inputFocused {
-				break
-			}
-			if a.screen == ScreenStreams && (a.streams.filterActive || a.streams.rgSelectorActive || a.streams.rgEpSelectorActive) {
-				break
-			}
-			if a.screen == ScreenFilters && a.filters.editingInput() {
-				break
-			}
-			// Don't treat "q" as quit while typing in a list's built-in filter.
-			if msg.String() == "q" && a.listFiltering() {
-				break
-			}
-			return a, tea.Quit
 		case "esc", "escape":
+			// esc is a back key only; it never quits the app.
 			if a.screen == ScreenStreams && (a.streams.filterActive || a.streams.rgSelectorActive || a.streams.rgEpSelectorActive) {
 				break
 			}
