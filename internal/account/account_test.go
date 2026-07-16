@@ -144,14 +144,17 @@ func TestApplyLibraryToHistory(t *testing.T) {
 		{ID: "tt2", Type: "movie", State: LibraryState{Duration: 100, TimeOffset: 90}}, // 90% -> watched
 		{ID: "tt3", Type: "movie", State: LibraryState{Duration: 100, TimeOffset: 10}}, // 10% -> not
 		{ID: "tt4", Type: "series", State: LibraryState{VideoID: "tt4:1:2", FlaggedWatched: 1}},
-		{ID: "tt5", Type: "movie", Removed: true, State: LibraryState{FlaggedWatched: 1}}, // removed -> skip
+		{ID: "tt5", Type: "movie", Removed: true, State: LibraryState{FlaggedWatched: 1}}, // removed but watched -> still imported
 	}
 	added := ApplyLibraryToHistory(h, items)
-	if added != 3 {
-		t.Fatalf("added = %d, want 3", added)
+	if added != 4 {
+		t.Fatalf("added = %d, want 4", added)
 	}
 	if !h.IsMovieWatched("tt1") || !h.IsMovieWatched("tt2") || h.IsMovieWatched("tt3") {
 		t.Fatalf("movie marks wrong")
+	}
+	if !h.IsMovieWatched("tt5") {
+		t.Fatalf("removed-but-watched movie should be imported")
 	}
 	if !h.IsEpisodeWatched("tt4", 1, 2) {
 		t.Fatalf("episode not marked")

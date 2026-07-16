@@ -21,10 +21,15 @@ func (s LibraryState) isWatched() bool {
 // This mapping is lossy by nature: Stremio's libraryItem stores a single current
 // position per title, not a full per-episode log, so only the item's current
 // video is imported for series.
+//
+// Note: the item's `removed` flag is intentionally IGNORED. In Stremio `removed`
+// means "removed from the Library list", not "unwatched" - a finished title that
+// the user cleared from their library still carries its watched state, and we
+// want that history. (Most watched items on a real account are `removed:true`.)
 func ApplyLibraryToHistory(h *history.WatchHistory, items []LibraryItem) int {
 	added := 0
 	for _, it := range items {
-		if it.Removed || !it.State.isWatched() {
+		if !it.State.isWatched() {
 			continue
 		}
 		imdb := history.ExtractIMDBID(it.ID)
