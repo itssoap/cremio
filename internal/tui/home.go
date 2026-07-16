@@ -52,7 +52,7 @@ type catalogErrorMsg struct {
 }
 
 func NewHomeModel(client *stremio.Client, cfg *config.Config) HomeModel {
-	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	l := newList()
 	l.Title = "Catalog"
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(true)

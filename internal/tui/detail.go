@@ -78,7 +78,7 @@ type metaErrorMsg struct {
 }
 
 func NewDetailModel(client *stremio.Client, cfg *config.Config) DetailModel {
-	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	l := newList()
 	l.Title = "Episodes"
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(false)

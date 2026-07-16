@@ -28,6 +28,17 @@ func (g GlobalFilters) IsEmpty() bool {
 		g.Type == "" && g.ReleaseGroup == ""
 }
 
+// AccountConfig holds Stremio account sync settings. The session token itself
+// is NEVER stored here; it lives in a separate 0600 auth.json file (see the
+// account package). Email is display-only. Passwords are never persisted.
+type AccountConfig struct {
+	Enabled     bool   `json:"enabled"`
+	SyncAddons  bool   `json:"sync_addons"`
+	SyncHistory bool   `json:"sync_history"`
+	SyncWrite   bool   `json:"sync_write"`
+	Email       string `json:"email,omitempty"`
+}
+
 type Config struct {
 	Addons           []string      `json:"addons"`
 	AutoFocusSearch  bool          `json:"auto_focus_search"`
@@ -37,6 +48,7 @@ type Config struct {
 	DownloadDir      string        `json:"download_dir"`
 	DownloadAria2c   *bool         `json:"download_use_aria2c,omitempty"`
 	DownloadParallel int           `json:"download_parallel,omitempty"`
+	Account          AccountConfig `json:"account"`
 	path             string
 }
 

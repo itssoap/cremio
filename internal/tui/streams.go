@@ -137,7 +137,22 @@ func providerTag(s stremio.Stream) string {
 	if name := strings.TrimSpace(s.Name); strings.Contains(name, "\n") {
 		return strings.TrimSpace(name[:strings.IndexByte(name, '\n')])
 	}
+	// Single-line names like "GDrive 2160p": the first token is the addon brand
+	// unless it is pure release info (e.g. "1080p - WEB-DL - [FLE]").
+	if fields := strings.Fields(s.Name); len(fields) > 0 && !isQualityToken(fields[0]) {
+		return fields[0]
+	}
 	return ""
+}
+
+// isQualityToken reports whether a token is resolution/quality info rather than
+// an addon or provider name.
+func isQualityToken(t string) bool {
+	switch strings.ToLower(t) {
+	case "4k", "2160p", "1080p", "720p", "480p", "uhd", "fhd", "hd", "sd":
+		return true
+	}
+	return false
 }
 
 type StreamsModel struct {
@@ -241,7 +256,7 @@ func (m *StreamsModel) popupVisibleRows() int {
 }
 
 func NewStreamsModel(client *stremio.Client, cfg *config.Config) StreamsModel {
-	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	l := newList()
 	l.Title = "Streams"
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(false)
@@ -433,7 +448,7 @@ func passesGlobalFilters(gf config.GlobalFilters, item streamItem) bool {
 	if gf.Type != "" && !ParseFilter(gf.Type).Match(streamTypeLabel(s)) {
 		return false
 	}
-	if gf.ReleaseGroup != "" && !ParseFilter(gf.ReleaseGroup).Match(player.ExtractReleaseGroup(s.Name)) {
+	if gf.ReleaseGroup != "" && !ParseFilter(gf.ReleaseGroup).Match(player.ReleaseGroup(s.Name, s.Filename())) {
 		return false
 	}
 	return true
@@ -491,7 +506,7 @@ func (m *StreamsModel) isBatchMode() bool {
 // episode in a chosen group is the SAME encode, not an arbitrary mix of the
 // group's BluRay / WEB-DL / codec variants.
 func releaseVariant(s stremio.Stream) string {
-	parts := []string{player.ExtractReleaseGroup(s.Name)}
+	parts := []string{player.ReleaseGroup(s.Name, s.Filename())}
 	if res := player.ParseResolution(s.Name, s.Title, s.Description); res != "" {
 		parts = append(parts, res)
 	}
@@ -947,7 +962,7 @@ func (m StreamsModel) infoPanel() string {
 	}
 
 	// Release group
-	if g := player.ExtractReleaseGroup(s.Name); g != "" && g != "Unknown" {
+	if g := player.ReleaseGroup(s.Name, item.fileName()); g != "" && g != "Unknown" {
 		rows = append(rows, label("Group:   ", g))
 	}
 

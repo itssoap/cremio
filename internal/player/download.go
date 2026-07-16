@@ -594,6 +594,67 @@ func FilenameFromURL(url string) string {
 	return ""
 }
 
+// Group extraction regexes. reNameDash/reFileBracket find explicit "-GROUP" or
+// "[GROUP]" markers; reResToken rejects resolution tokens ("2160p") and reCRC
+// rejects 8-hex CRC stamps ("8107BB99") that trail many file names.
+var (
+	reNameDash    = regexp.MustCompile(`-([A-Za-z0-9]+)(?:\s*$|\s*\n)`)
+	reFileGroup   = regexp.MustCompile(`-([A-Za-z0-9]+)$`)
+	reFileBracket = regexp.MustCompile(`\[([A-Za-z0-9]+)\]`)
+	reResToken    = regexp.MustCompile(`(?i)^\d{3,4}p$`)
+	reCRC         = regexp.MustCompile(`(?i)^[0-9a-f]{8}$`)
+)
+
+// ReleaseGroup extracts the scene release group. It first reads an explicit
+// marker in the stream name, then falls back to the file name, where addons
+// like GDrive keep the only copy of the group ("...-TRiToN.mkv", "[QxR].mkv")
+// while their Name is just "GDrive 2160p". Reading the name alone made GDrive
+// releases fail to line up with other addons.
+func ReleaseGroup(streamName, filename string) string {
+	if g := groupFromName(streamName); g != "" {
+		return g
+	}
+	if g := groupFromFilename(filename); g != "" {
+		return g
+	}
+	return "Unknown"
+}
+
+// groupFromName returns a group only when the name has an explicit -GROUP or
+// [GROUP] marker; it never falls back to the whole name.
+func groupFromName(streamName string) string {
+	name := strings.TrimSpace(streamName)
+	if m := reNameDash.FindStringSubmatch(name); len(m) > 1 && !reResToken.MatchString(m[1]) {
+		return m[1]
+	}
+	if m := reFileBracket.FindStringSubmatch(name); len(m) > 1 && !reCRC.MatchString(m[1]) {
+		return m[1]
+	}
+	return ""
+}
+
+func groupFromFilename(filename string) string {
+	f := strings.TrimSpace(filename)
+	if f == "" {
+		return ""
+	}
+	if ext := filepath.Ext(f); len(ext) <= 5 {
+		f = strings.TrimSuffix(f, ext)
+	}
+	f = strings.TrimSpace(f)
+	// First bracketed token that is neither a CRC stamp nor a resolution.
+	for _, m := range reFileBracket.FindAllStringSubmatch(f, -1) {
+		if !reCRC.MatchString(m[1]) && !reResToken.MatchString(m[1]) {
+			return m[1]
+		}
+	}
+	if m := reFileGroup.FindStringSubmatch(f); len(m) > 1 &&
+		!reResToken.MatchString(m[1]) && !reCRC.MatchString(m[1]) {
+		return m[1]
+	}
+	return ""
+}
+
 // ExtractReleaseGroup pulls release group from stream name.
 func ExtractReleaseGroup(streamName string) string {
 	name := strings.TrimSpace(streamName)

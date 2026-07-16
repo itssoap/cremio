@@ -104,3 +104,18 @@ func TestParseCodec(t *testing.T) {
 		}
 	}
 }
+
+func TestReleaseGroupFromFilename(t *testing.T) {
+	cases := map[string]string{
+		"The.Shawshank.1994.2160p.BluRay.REMUX.HDR.HEVC.DTS-HD.MA.5.1-TRiToN.mkv": "TRiToN",
+		"Inception.2010.2160p.BluRay.DTS-HD.MA.5.1.HDR.x265-CtrlHD.mkv":           "CtrlHD",
+		"The Godfather (1972) (2160p BluRay x265 HEVC Tigole) [QxR].mkv":          "QxR",
+		"[FLE] Sakamoto Days - S01E01 (WEB 1080p H.264) [Dual Audio] [8107BB99].mkv": "FLE",
+		"The Godfather (1972) {tmdb-238} - DV.HDR Remux-2160p.mkv":                "Unknown", // no scene group present
+	}
+	for file, want := range cases {
+		if got := ReleaseGroup("GDrive 2160p", file); got != want {
+			t.Errorf("ReleaseGroup(%q) = %q, want %q", file, got, want)
+		}
+	}
+}
