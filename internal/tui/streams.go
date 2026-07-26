@@ -181,7 +181,7 @@ type StreamsModel struct {
 	height        int
 
 	// Download state
-	downloadMsg     string
+	downloadMsg string
 
 	// Release group selector (batch download: groups first)
 	rgSelectorActive bool
@@ -516,7 +516,15 @@ func releaseVariant(s stremio.Stream) string {
 	if codec := player.ParseCodec(s.Name, s.Title, s.Description); codec != "" {
 		parts = append(parts, codec)
 	}
-	return strings.Join(parts, " - ")
+	variant := strings.Join(parts, " - ")
+	// A season pack shares its release group/res/codec with the per-episode
+	// files of the same group, but is a distinct thing (one release covering the
+	// whole season). Keep it in its own variant so it neither collapses into nor
+	// double-downloads alongside the per-episode files.
+	if player.IsSeasonPack(s.Filename()) {
+		variant += " (Season Pack)"
+	}
+	return variant
 }
 
 // collectReleaseGroups extracts unique release groups with metadata from visible streams.
@@ -525,6 +533,7 @@ func (m *StreamsModel) collectReleaseGroups() []releaseGroupInfo {
 		resolution string
 		episodes   map[string]bool
 		totalSize  int64
+		packSized  bool
 	}
 	groups := make(map[string]*groupData)
 	var order []string
@@ -543,8 +552,18 @@ func (m *StreamsModel) collectReleaseGroups() []releaseGroupInfo {
 		}
 		if si.episodeLabel != "" && !gd.episodes[si.episodeLabel] {
 			gd.episodes[si.episodeLabel] = true
-			sizeBytes, _ := player.ParseSize(si.stream.Name, si.stream.Title)
-			gd.totalSize += sizeBytes
+			// A season pack reports the whole-season size on every episode entry;
+			// count it once instead of multiplying it by the episode count.
+			if player.IsSeasonPack(si.fileName()) {
+				if !gd.packSized {
+					sizeBytes, _ := player.ParseSize(si.stream.Name, si.stream.Title)
+					gd.totalSize += sizeBytes
+					gd.packSized = true
+				}
+			} else {
+				sizeBytes, _ := player.ParseSize(si.stream.Name, si.stream.Title)
+				gd.totalSize += sizeBytes
+			}
 		}
 		if gd.resolution == "" {
 			gd.resolution = player.ParseResolution(si.stream.Name, si.stream.Title)
@@ -585,12 +604,16 @@ func (m *StreamsModel) collectEpisodesForGroup(group string) []episodeSelection 
 			continue
 		}
 		fname := si.fileName()
-		// Distinguish alternate cuts by file name; fall back to URL when the
-		// addon gives no name so genuine dups still collapse.
-		dedupKey := fname
-		if dedupKey == "" {
-			dedupKey = url
+		// Key rows by episode identity + file so: alternate cuts of one episode
+		// (same videoID, different file) both show; a genuine duplicate (same
+		// episode, same file from another source) collapses; and a season pack
+		// offered per episode (same file name, different videoID) keeps one row
+		// per episode instead of collapsing to a single row.
+		fileKey := fname
+		if fileKey == "" {
+			fileKey = url
 		}
+		dedupKey := si.videoID + "|" + fileKey
 		if seen[dedupKey] {
 			continue
 		}
@@ -633,7 +656,10 @@ func (m *StreamsModel) enqueueBatchDownload(mgr *player.DownloadManager, group s
 			continue
 		}
 		fname := ep.filename
-		if fname == "" {
+		// A season-pack file name has no episode marker and is identical across
+		// every episode, so writing them verbatim would collide on disk. Give
+		// each pack episode a unique, episode-tagged name.
+		if fname == "" || player.IsSeasonPack(fname) {
 			fname = fmt.Sprintf("%s - %s%s", m.metaName, ep.label, player.GuessExtension(ep.url))
 		}
 		destPath := player.EpisodePath(downloadDir, m.metaName, m.metaYear, ep.season, fname)

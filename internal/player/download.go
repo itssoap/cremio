@@ -603,7 +603,28 @@ var (
 	reFileBracket = regexp.MustCompile(`\[([A-Za-z0-9]+)\]`)
 	reResToken    = regexp.MustCompile(`(?i)^\d{3,4}p$`)
 	reCRC         = regexp.MustCompile(`(?i)^[0-9a-f]{8}$`)
+
+	// reEpisodeMarker matches a specific-episode token (S02E01, 2x05, E05,
+	// Episode 5); reSeasonMarker matches a season/complete token (S02, Season 2,
+	// Complete). A season pack has a season marker but no episode marker.
+	reEpisodeMarker = regexp.MustCompile(`(?i)(s\d{1,2}[\s._-]?e\d{1,3}|\b\d{1,2}x\d{2,3}\b|\bep(isode)?[\s._-]?\d{1,3}\b|\be\d{2,3}\b)`)
+	reSeasonMarker  = regexp.MustCompile(`(?i)(\bs\d{1,2}\b|season[\s._-]?\d{1,2}|\bcomplete\b)`)
 )
+
+// IsSeasonPack reports whether a filename names a whole-season release: it has a
+// season (or "complete") marker but no specific-episode marker. Season packs
+// (e.g. "The.Mentalist.S02.1080p.NF.WEB-DL-HHWEB") are surfaced by some addons
+// on every episode of the season with the SAME filename but a distinct per-
+// episode URL, so they need separate handling from per-episode files.
+func IsSeasonPack(filename string) bool {
+	if filename == "" {
+		return false
+	}
+	if reEpisodeMarker.MatchString(filename) {
+		return false
+	}
+	return reSeasonMarker.MatchString(filename)
+}
 
 // ReleaseGroup extracts the scene release group. It first reads an explicit
 // marker in the stream name, then falls back to the file name, where addons

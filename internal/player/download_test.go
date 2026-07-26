@@ -119,3 +119,27 @@ func TestReleaseGroupFromFilename(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSeasonPack(t *testing.T) {
+	cases := []struct {
+		filename string
+		want     bool
+	}{
+		// Real season packs (season marker, no episode marker).
+		{"The.Mentalist.S02.2008.1080p.NF.WEB-DL.DDP5.1.H.264-HHWEB", true},
+		{"Breaking.Bad.Season.5.Complete.1080p.BluRay-GROUP", true},
+		{"Show.S01.COMPLETE.720p", true},
+		// Per-episode files (episode marker present).
+		{"The Mentalist S02E01 2008 1080p NF WEB-DL DDP5 1 H 264-HHWEB.mkv", false},
+		{"Show.2x05.1080p.WEB-DL.mkv", false},
+		{"Show.S03E10.Red.Sky.1080p-OFT", false},
+		// Not season content at all.
+		{"The.Movie.2019.1080p.BluRay.x264-GROUP.mkv", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := IsSeasonPack(c.filename); got != c.want {
+			t.Errorf("IsSeasonPack(%q) = %v, want %v", c.filename, got, c.want)
+		}
+	}
+}
