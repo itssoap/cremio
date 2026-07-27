@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sort"
 	"strings"
 	"sync"
@@ -310,11 +311,9 @@ func (m StreamsModel) LoadStreams(nav NavigateToStreamsMsg) tea.Cmd {
 			wg.Add(1)
 			go func(i int, url string) {
 				defer wg.Done()
-				resp, err := client.FetchStreams(ctx, url, nav.Type, nav.ID)
-				if err != nil {
-					return
-				}
-				results[i] = res{streams: resp.Streams}
+				// Retry + drop error placeholders here too, so a rate-limited
+				// single view recovers instead of showing "Rate Limit Exceeded".
+				results[i] = res{streams: fetchStreamsWithRetry(ctx, client, url, nav.Type, nav.ID)}
 			}(i, addonURL)
 		}
 		wg.Wait()
@@ -332,10 +331,47 @@ func (m StreamsModel) LoadStreams(nav NavigateToStreamsMsg) tea.Cmd {
 	}
 }
 
+// fetchStreamsWithRetry fetches an addon's streams and returns only real content
+// streams. Aggregators rate-limit and answer HTTP 200 with a single non-content
+// "Rate Limit Exceeded" placeholder; that is indistinguishable from success by
+// the error alone, so it is detected (a response that has streams but none are
+// content) and retried with exponential backoff + jitter. A genuinely empty
+// result (zero streams) is returned as-is. Placeholder streams are never
+// returned, so a still-limited episode contributes nothing rather than a fake row.
+func fetchStreamsWithRetry(ctx context.Context, client *stremio.Client, addonURL, contentType, id string) []stremio.Stream {
+	const maxAttempts = 4
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err := client.FetchStreams(ctx, addonURL, contentType, id)
+		if err == nil {
+			var content []stremio.Stream
+			for _, s := range resp.Streams {
+				if s.IsContent() {
+					content = append(content, s)
+				}
+			}
+			// Real streams, or a genuine empty result -> done.
+			if len(content) > 0 || len(resp.Streams) == 0 {
+				return content
+			}
+			// Only non-content streams came back (error placeholder) -> retry.
+		}
+		if attempt < maxAttempts {
+			backoff := time.Duration(300<<uint(attempt-1))*time.Millisecond + time.Duration(rand.Intn(200))*time.Millisecond
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
 func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter) tea.Cmd {
 	// Snapshot the addon list to avoid racing with config mutations.
 	addons := append([]string(nil), m.config.Addons...)
 	client := m.client
+	perAddon := m.config.StreamFetchConcurrencyOrDefault()
 	return func() tea.Msg {
 		ctx := context.Background()
 
@@ -351,11 +387,16 @@ func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter)
 		}
 		results := make([]res, len(nav.Videos)*len(addons))
 
-		// ponytail: fixed pool of 5. Aggregator addons (e.g. AIOStreams) return
-		// truncated/empty results when hit with episodes*addons requests at once,
-		// which silently drops whole episodes. Bounding concurrency keeps every
-		// episode's response intact. Make it configurable if throughput matters.
-		sem := make(chan struct{}, 5)
+		// Bound concurrency PER ADDON (not globally): aggregators return
+		// truncated/placeholder results and drop whole episodes when hit with
+		// many concurrent requests, so requests to one addon are serialized by
+		// default (StreamFetchConcurrency, default 1) while different addons
+		// still run in parallel. fetchStreamsWithRetry recovers stragglers.
+		addonSem := make(map[string]chan struct{}, len(addons))
+		for _, a := range addons {
+			addonSem[a] = make(chan struct{}, perAddon)
+		}
+
 		var wg sync.WaitGroup
 		for vi, video := range nav.Videos {
 			label := fmt.Sprintf("S%02dE%02d", video.Season, video.Episode)
@@ -364,19 +405,15 @@ func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter)
 				idx := vi*len(addons) + ai
 				go func(idx int, k key, label, videoID, addonURL string) {
 					defer wg.Done()
+					sem := addonSem[addonURL]
 					sem <- struct{}{}
 					defer func() { <-sem }()
-					r := res{key: k, label: label, videoID: videoID}
-					resp, err := client.FetchStreams(ctx, addonURL, nav.Type, videoID)
-					if err != nil {
-						// One retry: transient overload can drop a request entirely.
-						time.Sleep(300 * time.Millisecond)
-						resp, err = client.FetchStreams(ctx, addonURL, nav.Type, videoID)
+					results[idx] = res{
+						key:     k,
+						label:   label,
+						videoID: videoID,
+						streams: fetchStreamsWithRetry(ctx, client, addonURL, nav.Type, videoID),
 					}
-					if err == nil {
-						r.streams = resp.Streams
-					}
-					results[idx] = r
 				}(idx, key{vi, ai}, label, video.ID, addonURL)
 			}
 		}

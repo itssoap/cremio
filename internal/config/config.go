@@ -48,8 +48,24 @@ type Config struct {
 	DownloadDir      string        `json:"download_dir"`
 	DownloadAria2c   *bool         `json:"download_use_aria2c,omitempty"`
 	DownloadParallel int           `json:"download_parallel,omitempty"`
-	Account          AccountConfig `json:"account"`
-	path             string
+	// StreamFetchConcurrency bounds how many stream requests are sent to a SINGLE
+	// addon at once when loading all episodes of a season. Aggregator addons
+	// (e.g. AIOStreams) rate-limit and return placeholder "Rate Limit Exceeded"
+	// streams above 1 concurrent request, which silently drops episodes, so the
+	// default is 1 (requests to one addon are serialized; different addons still
+	// run in parallel). Raise it only if your addons tolerate it.
+	StreamFetchConcurrency int           `json:"stream_fetch_concurrency,omitempty"`
+	Account                AccountConfig `json:"account"`
+	path                   string
+}
+
+// StreamFetchConcurrencyOrDefault returns the per-addon fetch concurrency,
+// defaulting to 1 when unset or invalid.
+func (c *Config) StreamFetchConcurrencyOrDefault() int {
+	if c.StreamFetchConcurrency < 1 {
+		return 1
+	}
+	return c.StreamFetchConcurrency
 }
 
 // PlaylistEnabled reports whether playlist mode is on. It defaults to true when

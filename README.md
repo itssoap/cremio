@@ -215,7 +215,8 @@ The config file holds the list of installed addon base URLs and optional setting
   },
   "download_dir": "",
   "download_use_aria2c": true,
-  "download_parallel": 1
+  "download_parallel": 1,
+  "stream_fetch_concurrency": 1
 }
 ```
 
@@ -235,6 +236,7 @@ the bad file is renamed to `config.json.invalid` and defaults are restored.
 | `download_dir` | string | `""` | Base download directory. Priority: this > OS Downloads folder > current directory |
 | `download_use_aria2c` | boolean | `true` | Use aria2c for downloads if available in PATH (falls back to Go HTTP) |
 | `download_parallel` | integer | `1` | Number of simultaneous downloads |
+| `stream_fetch_concurrency` | integer | `1` | Max concurrent stream requests sent to a single addon when loading a whole season. Aggregators (e.g. AIOStreams) rate-limit and drop episodes above 1, so keep this at 1 unless your addons tolerate more. Different addons are always queried in parallel |
 
 ## Watch History
 
