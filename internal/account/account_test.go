@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -162,5 +163,29 @@ func TestApplyLibraryToHistory(t *testing.T) {
 	// Idempotent: second apply adds nothing.
 	if again := ApplyLibraryToHistory(h, items); again != 0 {
 		t.Fatalf("second apply added %d, want 0", again)
+	}
+}
+
+func TestRequestBodyIsCapped(t *testing.T) {
+	// Server streams a valid envelope prefix then far more than the 10 MiB cap
+	// without ever closing the JSON, so a bounded decode must fail (rather than
+	// buffering the whole hostile body).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"result":{"user":{"_id":"`)
+		chunk := strings.Repeat("a", 64*1024)
+		for written := 0; written < 11<<20; written += len(chunk) {
+			if _, err := io.WriteString(w, chunk); err != nil {
+				return
+			}
+		}
+		// intentionally never closed
+	}))
+	defer srv.Close()
+
+	c := newWithEndpoint(srv.URL)
+	c.SetAuthKey("KEY")
+	if _, err := c.GetUser(context.Background()); err == nil {
+		t.Fatal("expected an error from a body exceeding the 10 MiB cap")
 	}
 }

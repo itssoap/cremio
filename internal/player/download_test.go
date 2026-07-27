@@ -1,6 +1,7 @@
 package player
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -53,12 +54,12 @@ func TestMoviePathKeepsFilename(t *testing.T) {
 
 func TestParseAria2Size(t *testing.T) {
 	cases := map[string]int64{
-		"1.0B":     1,
-		"512KiB":   512 * 1024,
-		"1.0MiB":   1024 * 1024,
-		"1.5GiB":   int64(1.5 * 1024 * 1024 * 1024),
-		"2GiB":     2 * 1024 * 1024 * 1024,
-		"garbage":  0,
+		"1.0B":    1,
+		"512KiB":  512 * 1024,
+		"1.0MiB":  1024 * 1024,
+		"1.5GiB":  int64(1.5 * 1024 * 1024 * 1024),
+		"2GiB":    2 * 1024 * 1024 * 1024,
+		"garbage": 0,
 	}
 	for in, want := range cases {
 		if got := parseAria2Size(in); got != want {
@@ -92,11 +93,11 @@ func TestFilenameFromURL(t *testing.T) {
 
 func TestParseCodec(t *testing.T) {
 	cases := map[string]string{
-		"1080p WEB-DL x265 HEVC":  "HEVC",
-		"1080p BluRay H.264 AVC":  "AVC",
-		"2160p WEB-DL AV1":        "AV1",
-		"1080p WEB-DL H264":       "AVC",
-		"1080p WEB-DL DDP5.1":     "",
+		"1080p WEB-DL x265 HEVC": "HEVC",
+		"1080p BluRay H.264 AVC": "AVC",
+		"2160p WEB-DL AV1":       "AV1",
+		"1080p WEB-DL H264":      "AVC",
+		"1080p WEB-DL DDP5.1":    "",
 	}
 	for in, want := range cases {
 		if got := ParseCodec(in); got != want {
@@ -107,11 +108,11 @@ func TestParseCodec(t *testing.T) {
 
 func TestReleaseGroupFromFilename(t *testing.T) {
 	cases := map[string]string{
-		"The.Shawshank.1994.2160p.BluRay.REMUX.HDR.HEVC.DTS-HD.MA.5.1-TRiToN.mkv": "TRiToN",
-		"Inception.2010.2160p.BluRay.DTS-HD.MA.5.1.HDR.x265-CtrlHD.mkv":           "CtrlHD",
-		"The Godfather (1972) (2160p BluRay x265 HEVC Tigole) [QxR].mkv":          "QxR",
+		"The.Shawshank.1994.2160p.BluRay.REMUX.HDR.HEVC.DTS-HD.MA.5.1-TRiToN.mkv":    "TRiToN",
+		"Inception.2010.2160p.BluRay.DTS-HD.MA.5.1.HDR.x265-CtrlHD.mkv":              "CtrlHD",
+		"The Godfather (1972) (2160p BluRay x265 HEVC Tigole) [QxR].mkv":             "QxR",
 		"[FLE] Sakamoto Days - S01E01 (WEB 1080p H.264) [Dual Audio] [8107BB99].mkv": "FLE",
-		"The Godfather (1972) {tmdb-238} - DV.HDR Remux-2160p.mkv":                "Unknown", // no scene group present
+		"The Godfather (1972) {tmdb-238} - DV.HDR Remux-2160p.mkv":                   "Unknown", // no scene group present
 	}
 	for file, want := range cases {
 		if got := ReleaseGroup("GDrive 2160p", file); got != want {
@@ -166,5 +167,64 @@ func TestEnsureContainer(t *testing.T) {
 		if got := EnsureContainer(c.filename, c.url); got != c.want {
 			t.Errorf("EnsureContainer(%q, %q) = %q, want %q", c.filename, c.url, got, c.want)
 		}
+	}
+}
+
+func TestEnqueueRejectsUnsafeURLs(t *testing.T) {
+	safe := []string{
+		"http://host/file.mkv",
+		"https://host/file.mkv",
+	}
+	unsafe := []string{
+		"",                        // empty
+		"-x",                      // option-like (aria2c flag injection)
+		"--conf-path=/etc/evil",   // option-like
+		"magnet:?xt=urn:btih:abc", // not http(s): not directly downloadable
+		"file:///etc/passwd",      // local file scheme
+		"ftp://host/f",            // unsupported scheme
+	}
+	for _, u := range safe {
+		if !isDownloadableURL(u) {
+			t.Errorf("isDownloadableURL(%q) = false, want true", u)
+		}
+	}
+	for _, u := range unsafe {
+		if isDownloadableURL(u) {
+			t.Errorf("isDownloadableURL(%q) = true, want false", u)
+		}
+	}
+}
+
+func TestEnqueueMarksUnsafeJobFailed(t *testing.T) {
+	dm := NewDownloadManager(1, false)
+
+	dm.Enqueue("bad", "-x", "/tmp/out")
+	dm.Enqueue("good", "https://host/f.mkv", "/tmp/out2")
+
+	jobs := dm.Jobs()
+	if len(jobs) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(jobs))
+	}
+	if jobs[0].State != StateFailed || jobs[0].Err == nil {
+		t.Errorf("unsafe URL should be enqueued as failed, got state=%v err=%v", jobs[0].State, jobs[0].Err)
+	}
+	if jobs[1].State != StateQueued {
+		t.Errorf("safe URL should be queued, got state=%v", jobs[1].State)
+	}
+}
+
+func TestProcessQueueSkipsFailedJob(t *testing.T) {
+	// A manager holding only an unsafe (already-failed) job must dispatch
+	// nothing: ProcessQueue only picks StateQueued jobs, so no backend runs and
+	// no network call is made.
+	dm := NewDownloadManager(1, false)
+	dm.Enqueue("bad", "-x", "/tmp/out")
+
+	job, err := dm.ProcessQueue(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessQueue error: %v", err)
+	}
+	if job != nil {
+		t.Errorf("expected no job dispatched, got %+v", job)
 	}
 }

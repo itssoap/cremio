@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -104,7 +105,9 @@ func (c *Client) request(ctx context.Context, method string, params map[string]a
 	defer resp.Body.Close()
 
 	var env envelope
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+	// Cap the response body: API responses are untrusted, and an unbounded
+	// decode of a hostile/compromised reply could exhaust memory.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(&env); err != nil {
 		return fmt.Errorf("decode %s response: %w", method, err)
 	}
 	if env.Error != nil {

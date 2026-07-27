@@ -89,20 +89,42 @@ func (dm *DownloadManager) HasAria2c() bool {
 	return dm.aria2cPath != ""
 }
 
-// Enqueue adds a download job to the queue. Returns the job ID.
+// isDownloadableURL reports whether a URL is safe to hand to a download backend.
+// Stream URLs come from untrusted addons, so only http(s) is accepted, and
+// anything option-like (beginning with "-", which aria2c would parse as a
+// command-line flag) is rejected. http(s):// already excludes a leading "-";
+// the explicit check keeps the intent obvious if the scheme rule is ever
+// loosened.
+func isDownloadableURL(u string) bool {
+	if strings.HasPrefix(u, "-") {
+		return false
+	}
+	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+}
+
+// Enqueue adds a download job to the queue. Returns the job ID. A URL that is
+// not safe to download (non-http(s), or option-like) is enqueued already in the
+// failed state so it is visible in the downloads view and never reaches a
+// backend, rather than being silently dropped.
 func (dm *DownloadManager) Enqueue(label, url, destPath string) int {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	id := dm.nextID
 	dm.nextID++
-	dm.jobs = append(dm.jobs, &DownloadJob{
+	job := &DownloadJob{
 		ID:         id,
 		Label:      label,
 		URL:        url,
 		DestPath:   destPath,
 		State:      StateQueued,
 		TotalBytes: -1,
-	})
+	}
+	if !isDownloadableURL(url) {
+		job.State = StateFailed
+		job.Err = fmt.Errorf("refusing to download unsupported or unsafe URL")
+		job.FinishedAt = time.Now()
+	}
+	dm.jobs = append(dm.jobs, job)
 	return id
 }
 
