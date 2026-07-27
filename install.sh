@@ -19,12 +19,16 @@ BINARY="cremio"
 PRE_RELEASE=false
 CHECK_ONLY=false
 NO_PATH=false
+UNINSTALL=false
+PURGE_DATA=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --pre-release|--prerelease|--pre) PRE_RELEASE=true ;;
         --check|--check-only|--dry-run)   CHECK_ONLY=true ;;
         --no-path)                        NO_PATH=true ;;
+        --uninstall|--remove)             UNINSTALL=true ;;
+        --purge-data|--purge)             PURGE_DATA=true ;;
         -h|--help)
             cat <<'EOF'
 Cremio installer / updater
@@ -35,6 +39,10 @@ Options:
   --pre-release   Install or update to the newest pre-release build
   --check         Only check whether a new version is available (no changes)
   --no-path       Do not modify shell profile / PATH
+  --uninstall     Remove cremio: binary, .version, and the PATH entry (prompts
+                  before deleting config/data)
+  --purge-data    With --uninstall, also delete config/data (history, session)
+                  without prompting
   -h, --help      Show this help
 
 Targets for replacement are detected in this order:
@@ -146,7 +154,102 @@ download() {
     fi
 }
 
+# strip_path_line <profile> <dir>: remove the PATH lines this installer added.
+strip_path_line() {
+    local profile="$1" dir="$2" tmp
+    [ -f "$profile" ] || return 0
+    tmp=$(mktemp)
+    grep -vF "# Added by cremio installer" "$profile" \
+        | grep -vF "export PATH=\"${dir}:\$PATH\"" \
+        | grep -vF "fish_add_path ${dir}" > "$tmp"
+    if ! cmp -s "$tmp" "$profile"; then
+        cp "$profile" "${profile}.cremio.bak"
+        mv "$tmp" "$profile"
+        info "Removed PATH entry from ${profile} (backup: ${profile}.cremio.bak)"
+    else
+        rm -f "$tmp"
+    fi
+}
+
+do_uninstall() {
+    printf '\n  \033[32mCremio Uninstaller\033[0m\n'
+    info "https://github.com/${REPO}"
+    printf '\n'
+
+    local install_dir="${HOME}/.local/bin"
+    local version_file="${HOME}/.local/share/cremio/.version"
+
+    # Locate the binary: PATH first, then default. Never a CWD local build.
+    local bin_path=""
+    if command -v "$BINARY" >/dev/null 2>&1; then
+        bin_path=$(command -v "$BINARY")
+    fi
+    local cwd_bin="$(pwd)/${BINARY}"
+    if [ -n "$bin_path" ] && [ "$bin_path" = "$cwd_bin" ]; then
+        warn "Ignoring ${BINARY} in the current directory (looks like a local build)."
+        bin_path=""
+    fi
+    if [ -z "$bin_path" ] && [ -f "${install_dir}/${BINARY}" ]; then
+        bin_path="${install_dir}/${BINARY}"
+    fi
+
+    if [ -n "$bin_path" ] && [ -f "$bin_path" ]; then
+        if rm -f "$bin_path" 2>/dev/null; then
+            info "Removed ${bin_path}"
+        else
+            warn "Could not remove ${bin_path} (permission denied?)"
+        fi
+    else
+        info "No installed ${BINARY} found (nothing to remove)."
+    fi
+
+    local bin_dir
+    bin_dir=$(dirname "${bin_path:-${install_dir}/${BINARY}}")
+
+    if [ -f "$version_file" ]; then
+        rm -f "$version_file"
+        info "Removed ${version_file}"
+    fi
+    local share_dir
+    share_dir=$(dirname "$version_file")
+    [ -d "$share_dir" ] && rmdir "$share_dir" 2>/dev/null && info "Removed ${share_dir}" || true
+
+    step "Cleaning PATH..."
+    for profile in "${HOME}/.zshrc" "${HOME}/.bashrc" "${HOME}/.profile" "${HOME}/.config/fish/config.fish"; do
+        strip_path_line "$profile" "$bin_dir"
+    done
+
+    # Config/data (separate from the binary): keep by default.
+    local data_dir="${HOME}/.config/cremio"
+    if [ -d "$data_dir" ]; then
+        local purge=$PURGE_DATA
+        if ! $purge; then
+            printf '\n'
+            warn "Config and data (watch history, saved account session) live in:"
+            info "  ${data_dir}"
+            printf '   Remove this too? History and login will be lost [y/N] '
+            local answer=""
+            read -r answer </dev/tty 2>/dev/null || answer=""
+            case "$answer" in y|Y|yes|YES) purge=true ;; *) purge=false ;; esac
+        fi
+        if $purge; then
+            rm -rf "$data_dir"
+            info "Removed ${data_dir}"
+        else
+            info "Kept ${data_dir}"
+        fi
+    fi
+
+    printf '\n  \033[32mCremio uninstalled.\033[0m\n'
+    printf '  \033[90mOpen a new terminal for the PATH change to take effect.\033[0m\n\n'
+}
+
 # --- main ------------------------------------------------------------
+if $UNINSTALL; then
+    do_uninstall
+    exit 0
+fi
+
 printf '\n  \033[32mCremio Unix Installer\033[0m\n'
 info "https://github.com/${REPO}"
 $PRE_RELEASE && info "channel: pre-release"

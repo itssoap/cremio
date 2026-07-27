@@ -19,6 +19,12 @@
     Only report whether a new version is available. Makes no changes.
 .PARAMETER NoPath
     Skip adding the install directory to PATH.
+.PARAMETER Uninstall
+    Remove cremio: deletes the installed binary and .version, strips the install
+    directory from your user PATH, and prompts before removing config/data.
+.PARAMETER PurgeData
+    With -Uninstall, also remove config/data (history, saved session) without
+    prompting. Ignored without -Uninstall.
 .EXAMPLE
     irm https://raw.githubusercontent.com/itssoap/cremio/main/install.ps1 | iex
 .EXAMPLE
@@ -33,7 +39,9 @@ param(
     [string]$InstallDir = "$env:LOCALAPPDATA\cremio\bin",
     [switch]$PreRelease,
     [switch]$CheckOnly,
-    [switch]$NoPath
+    [switch]$NoPath,
+    [switch]$Uninstall,
+    [switch]$PurgeData
 )
 
 function Install-Cremio {
@@ -42,7 +50,9 @@ function Install-Cremio {
         [string]$InstallDir = "$env:LOCALAPPDATA\cremio\bin",
         [switch]$PreRelease,
         [switch]$CheckOnly,
-        [switch]$NoPath
+        [switch]$NoPath,
+        [switch]$Uninstall,
+        [switch]$PurgeData
     )
 
     $ErrorActionPreference = "Stop"
@@ -120,7 +130,95 @@ function Install-Cremio {
         return Invoke-GitHubApi "https://api.github.com/repos/$Repo/releases/latest"
     }
 
+    function Uninstall-Cremio {
+        Write-Host ""
+        Write-Host "  Cremio Uninstaller" -ForegroundColor Green
+        Write-Info "https://github.com/$Repo"
+        Write-Host ""
+
+        # Locate the installed binary: PATH first, then the default InstallDir.
+        $binPath = $null
+        $cmd = Get-Command $Binary -ErrorAction SilentlyContinue
+        if ($cmd) { $binPath = $cmd.Source }
+        $defaultBin = Join-Path $InstallDir $Binary
+        if (-not $binPath -and (Test-Path $defaultBin)) { $binPath = $defaultBin }
+
+        # Never delete a copy sitting in the current directory (a local build).
+        $cwdBin = Join-Path (Get-Location).Path $Binary
+        if ($binPath -and ($binPath -eq $cwdBin)) {
+            Write-Warn "Ignoring $Binary in the current directory (looks like a local build)."
+            $binPath = if (Test-Path $defaultBin) { $defaultBin } else { $null }
+        }
+
+        if ($binPath -and (Test-Path $binPath)) {
+            try {
+                Remove-Item $binPath -Force -ErrorAction Stop
+                Write-Info "Removed $binPath"
+            } catch {
+                Write-Warn "Could not remove $binPath -- $($_.Exception.Message)"
+            }
+        } else {
+            Write-Info "No installed $Binary found (nothing to remove)."
+        }
+
+        $binDir = if ($binPath) { Split-Path $binPath -Parent } else { $InstallDir }
+
+        if (Test-Path $VersionFile) {
+            Remove-Item $VersionFile -Force -ErrorAction SilentlyContinue
+            Write-Info "Removed $VersionFile"
+        }
+
+        # Remove the bin dir (and its parent) if now empty.
+        if ((Test-Path $binDir) -and -not (Get-ChildItem $binDir -Force -ErrorAction SilentlyContinue)) {
+            Remove-Item $binDir -Force -ErrorAction SilentlyContinue
+            $parent = Split-Path $binDir -Parent
+            if ((Test-Path $parent) -and -not (Get-ChildItem $parent -Force -ErrorAction SilentlyContinue)) {
+                Remove-Item $parent -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        # Strip the bin dir from the user PATH.
+        Write-Step "Cleaning PATH..."
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ($userPath) {
+            $entries = $userPath -split ';' | Where-Object { $_ -and ($_ -ne $binDir) }
+            $newPath = ($entries -join ';')
+            if ($newPath -ne $userPath) {
+                [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+                Write-Info "Removed $binDir from user PATH."
+            } else {
+                Write-Info "$binDir was not on user PATH."
+            }
+        }
+
+        # Config / data (roaming) is separate from the binary; keep by default.
+        $dataDir = Join-Path $env:APPDATA "cremio"
+        if (Test-Path $dataDir) {
+            $purge = [bool]$PurgeData
+            if (-not $purge) {
+                Write-Host ""
+                Write-Warn "Config and data (watch history, saved account session) live in:"
+                Write-Info "  $dataDir"
+                $answer = Read-Host "Remove this too? History and login will be lost [y/N]"
+                $purge = ($answer -match '^(y|yes)$')
+            }
+            if ($purge) {
+                Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Info "Removed $dataDir"
+            } else {
+                Write-Info "Kept $dataDir"
+            }
+        }
+
+        Write-Host ""
+        Write-Host "  Cremio uninstalled." -ForegroundColor Green
+        Write-Host "  Open a new terminal for the PATH change to take effect." -ForegroundColor DarkGray
+        Write-Host ""
+    }
+
     # --- main ------------------------------------------------------------
+    if ($Uninstall) { Uninstall-Cremio; return }
+
     Write-Host ""
     Write-Host "  Cremio Windows Installer" -ForegroundColor Green
     Write-Info "https://github.com/$Repo"
