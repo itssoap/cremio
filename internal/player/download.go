@@ -566,6 +566,27 @@ func EpisodePath(base, showName, year string, season int, filename string) strin
 	return filepath.Join(base, folder, seasonDir, SanitizePath(filename))
 }
 
+// EnsureContainer guarantees a download filename ends with a video container
+// extension. Some addons return behaviorHints.filename without one (e.g.
+// "...2160p.WEB-DL-BYNDR"); saved verbatim that yields an extension-less file
+// the OS and some players won't recognise. When the extension is missing it is
+// taken from the URL, falling back to .mkv.
+//
+// ponytail: defaults to .mkv when the URL carries no extension either; a
+// Content-Type/Content-Disposition sniff on the HTTP response is the upgrade
+// path if that guess is ever wrong (players sniff by content, so playback still
+// works even when the guess and real container differ).
+func EnsureContainer(filename, url string) string {
+	if filename == "" {
+		return filename
+	}
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".mkv", ".mp4", ".avi", ".webm", ".ts":
+		return filename
+	}
+	return filename + GuessExtension(url)
+}
+
 // GuessExtension extracts file extension from URL, defaults to .mkv.
 func GuessExtension(url string) string {
 	clean := strings.SplitN(url, "?", 2)[0]

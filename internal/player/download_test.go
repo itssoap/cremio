@@ -143,3 +143,28 @@ func TestIsSeasonPack(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureContainer(t *testing.T) {
+	cases := []struct {
+		filename string
+		url      string
+		want     string
+	}{
+		// Already has a container -> unchanged.
+		{"Movie.2026.2160p.WEB-DL-BYNDR.mkv", "https://x/y", "Movie.2026.2160p.WEB-DL-BYNDR.mkv"},
+		{"clip.mp4", "https://x/y.mkv", "clip.mp4"},
+		// Missing container, URL has no usable ext -> default .mkv.
+		{"The.Backrooms.2026.2160p.WEB-DL.DDP5.1-BYNDR", "https://cdn/proxy/abc", "The.Backrooms.2026.2160p.WEB-DL.DDP5.1-BYNDR.mkv"},
+		// Missing container, but the URL carries the real extension.
+		{"The.Backrooms.2026.2160p-BYNDR", "https://cdn/proxy/The.Backrooms.2026.mp4", "The.Backrooms.2026.2160p-BYNDR.mp4"},
+		// No dots at all.
+		{"Backrooms2026", "https://x/y", "Backrooms2026.mkv"},
+		// Empty stays empty (caller synthesizes a name instead).
+		{"", "https://x/y", ""},
+	}
+	for _, c := range cases {
+		if got := EnsureContainer(c.filename, c.url); got != c.want {
+			t.Errorf("EnsureContainer(%q, %q) = %q, want %q", c.filename, c.url, got, c.want)
+		}
+	}
+}

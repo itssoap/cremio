@@ -661,6 +661,8 @@ func (m *StreamsModel) enqueueBatchDownload(mgr *player.DownloadManager, group s
 		// each pack episode a unique, episode-tagged name.
 		if fname == "" || player.IsSeasonPack(fname) {
 			fname = fmt.Sprintf("%s - %s%s", m.metaName, ep.label, player.GuessExtension(ep.url))
+		} else {
+			fname = player.EnsureContainer(fname, ep.url)
 		}
 		destPath := player.EpisodePath(downloadDir, m.metaName, m.metaYear, ep.season, fname)
 		mgr.Enqueue(fname, ep.url, destPath)
@@ -680,6 +682,8 @@ func (m *StreamsModel) enqueueSingleDownload(mgr *player.DownloadManager, item s
 				fname = fmt.Sprintf("%s (%s)", m.metaName, y)
 			}
 			fname += player.GuessExtension(url)
+		} else {
+			fname = player.EnsureContainer(fname, url)
 		}
 		destPath := player.MoviePath(downloadDir, m.metaName, m.metaYear, fname)
 		mgr.Enqueue(fname, url, destPath)
@@ -692,6 +696,8 @@ func (m *StreamsModel) enqueueSingleDownload(mgr *player.DownloadManager, item s
 	season, episode := history.ParseEpisodeID(videoID)
 	if fname == "" {
 		fname = fmt.Sprintf("%s - S%02dE%02d%s", m.metaName, season, episode, player.GuessExtension(url))
+	} else {
+		fname = player.EnsureContainer(fname, url)
 	}
 	destPath := player.EpisodePath(downloadDir, m.metaName, m.metaYear, season, fname)
 	mgr.Enqueue(fname, url, destPath)
