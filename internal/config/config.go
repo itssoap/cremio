@@ -28,6 +28,17 @@ func (g GlobalFilters) IsEmpty() bool {
 		g.Type == "" && g.ReleaseGroup == ""
 }
 
+// AccountConfig holds Stremio account sync settings. The session token itself
+// is NEVER stored here; it lives in a separate 0600 auth.json file (see the
+// account package). Email is display-only. Passwords are never persisted.
+type AccountConfig struct {
+	Enabled     bool   `json:"enabled"`
+	SyncAddons  bool   `json:"sync_addons"`
+	SyncHistory bool   `json:"sync_history"`
+	SyncWrite   bool   `json:"sync_write"`
+	Email       string `json:"email,omitempty"`
+}
+
 type Config struct {
 	Addons           []string      `json:"addons"`
 	AutoFocusSearch  bool          `json:"auto_focus_search"`
@@ -37,7 +48,24 @@ type Config struct {
 	DownloadDir      string        `json:"download_dir"`
 	DownloadAria2c   *bool         `json:"download_use_aria2c,omitempty"`
 	DownloadParallel int           `json:"download_parallel,omitempty"`
-	path             string
+	// StreamFetchConcurrency bounds how many stream requests are sent to a SINGLE
+	// addon at once when loading all episodes of a season. Aggregator addons
+	// (e.g. AIOStreams) rate-limit and return placeholder "Rate Limit Exceeded"
+	// streams above 1 concurrent request, which silently drops episodes, so the
+	// default is 1 (requests to one addon are serialized; different addons still
+	// run in parallel). Raise it only if your addons tolerate it.
+	StreamFetchConcurrency int           `json:"stream_fetch_concurrency,omitempty"`
+	Account                AccountConfig `json:"account"`
+	path                   string
+}
+
+// StreamFetchConcurrencyOrDefault returns the per-addon fetch concurrency,
+// defaulting to 1 when unset or invalid.
+func (c *Config) StreamFetchConcurrencyOrDefault() int {
+	if c.StreamFetchConcurrency < 1 {
+		return 1
+	}
+	return c.StreamFetchConcurrency
 }
 
 // PlaylistEnabled reports whether playlist mode is on. It defaults to true when

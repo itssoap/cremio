@@ -89,20 +89,42 @@ func (dm *DownloadManager) HasAria2c() bool {
 	return dm.aria2cPath != ""
 }
 
-// Enqueue adds a download job to the queue. Returns the job ID.
+// isDownloadableURL reports whether a URL is safe to hand to a download backend.
+// Stream URLs come from untrusted addons, so only http(s) is accepted, and
+// anything option-like (beginning with "-", which aria2c would parse as a
+// command-line flag) is rejected. http(s):// already excludes a leading "-";
+// the explicit check keeps the intent obvious if the scheme rule is ever
+// loosened.
+func isDownloadableURL(u string) bool {
+	if strings.HasPrefix(u, "-") {
+		return false
+	}
+	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+}
+
+// Enqueue adds a download job to the queue. Returns the job ID. A URL that is
+// not safe to download (non-http(s), or option-like) is enqueued already in the
+// failed state so it is visible in the downloads view and never reaches a
+// backend, rather than being silently dropped.
 func (dm *DownloadManager) Enqueue(label, url, destPath string) int {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	id := dm.nextID
 	dm.nextID++
-	dm.jobs = append(dm.jobs, &DownloadJob{
+	job := &DownloadJob{
 		ID:         id,
 		Label:      label,
 		URL:        url,
 		DestPath:   destPath,
 		State:      StateQueued,
 		TotalBytes: -1,
-	})
+	}
+	if !isDownloadableURL(url) {
+		job.State = StateFailed
+		job.Err = fmt.Errorf("refusing to download unsupported or unsafe URL")
+		job.FinishedAt = time.Now()
+	}
+	dm.jobs = append(dm.jobs, job)
 	return id
 }
 
@@ -566,6 +588,27 @@ func EpisodePath(base, showName, year string, season int, filename string) strin
 	return filepath.Join(base, folder, seasonDir, SanitizePath(filename))
 }
 
+// EnsureContainer guarantees a download filename ends with a video container
+// extension. Some addons return behaviorHints.filename without one (e.g.
+// "...2160p.WEB-DL-BYNDR"); saved verbatim that yields an extension-less file
+// the OS and some players won't recognise. When the extension is missing it is
+// taken from the URL, falling back to .mkv.
+//
+// ponytail: defaults to .mkv when the URL carries no extension either; a
+// Content-Type/Content-Disposition sniff on the HTTP response is the upgrade
+// path if that guess is ever wrong (players sniff by content, so playback still
+// works even when the guess and real container differ).
+func EnsureContainer(filename, url string) string {
+	if filename == "" {
+		return filename
+	}
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".mkv", ".mp4", ".avi", ".webm", ".ts":
+		return filename
+	}
+	return filename + GuessExtension(url)
+}
+
 // GuessExtension extracts file extension from URL, defaults to .mkv.
 func GuessExtension(url string) string {
 	clean := strings.SplitN(url, "?", 2)[0]
@@ -590,6 +633,88 @@ func FilenameFromURL(url string) string {
 	switch strings.ToLower(filepath.Ext(base)) {
 	case ".mkv", ".mp4", ".avi", ".webm", ".ts":
 		return base
+	}
+	return ""
+}
+
+// Group extraction regexes. reNameDash/reFileBracket find explicit "-GROUP" or
+// "[GROUP]" markers; reResToken rejects resolution tokens ("2160p") and reCRC
+// rejects 8-hex CRC stamps ("8107BB99") that trail many file names.
+var (
+	reNameDash    = regexp.MustCompile(`-([A-Za-z0-9]+)(?:\s*$|\s*\n)`)
+	reFileGroup   = regexp.MustCompile(`-([A-Za-z0-9]+)$`)
+	reFileBracket = regexp.MustCompile(`\[([A-Za-z0-9]+)\]`)
+	reResToken    = regexp.MustCompile(`(?i)^\d{3,4}p$`)
+	reCRC         = regexp.MustCompile(`(?i)^[0-9a-f]{8}$`)
+
+	// reEpisodeMarker matches a specific-episode token (S02E01, 2x05, E05,
+	// Episode 5); reSeasonMarker matches a season/complete token (S02, Season 2,
+	// Complete). A season pack has a season marker but no episode marker.
+	reEpisodeMarker = regexp.MustCompile(`(?i)(s\d{1,2}[\s._-]?e\d{1,3}|\b\d{1,2}x\d{2,3}\b|\bep(isode)?[\s._-]?\d{1,3}\b|\be\d{2,3}\b)`)
+	reSeasonMarker  = regexp.MustCompile(`(?i)(\bs\d{1,2}\b|season[\s._-]?\d{1,2}|\bcomplete\b)`)
+)
+
+// IsSeasonPack reports whether a filename names a whole-season release: it has a
+// season (or "complete") marker but no specific-episode marker. Season packs
+// (e.g. "The.Mentalist.S02.1080p.NF.WEB-DL-HHWEB") are surfaced by some addons
+// on every episode of the season with the SAME filename but a distinct per-
+// episode URL, so they need separate handling from per-episode files.
+func IsSeasonPack(filename string) bool {
+	if filename == "" {
+		return false
+	}
+	if reEpisodeMarker.MatchString(filename) {
+		return false
+	}
+	return reSeasonMarker.MatchString(filename)
+}
+
+// ReleaseGroup extracts the scene release group. It first reads an explicit
+// marker in the stream name, then falls back to the file name, where addons
+// like GDrive keep the only copy of the group ("...-TRiToN.mkv", "[QxR].mkv")
+// while their Name is just "GDrive 2160p". Reading the name alone made GDrive
+// releases fail to line up with other addons.
+func ReleaseGroup(streamName, filename string) string {
+	if g := groupFromName(streamName); g != "" {
+		return g
+	}
+	if g := groupFromFilename(filename); g != "" {
+		return g
+	}
+	return "Unknown"
+}
+
+// groupFromName returns a group only when the name has an explicit -GROUP or
+// [GROUP] marker; it never falls back to the whole name.
+func groupFromName(streamName string) string {
+	name := strings.TrimSpace(streamName)
+	if m := reNameDash.FindStringSubmatch(name); len(m) > 1 && !reResToken.MatchString(m[1]) {
+		return m[1]
+	}
+	if m := reFileBracket.FindStringSubmatch(name); len(m) > 1 && !reCRC.MatchString(m[1]) {
+		return m[1]
+	}
+	return ""
+}
+
+func groupFromFilename(filename string) string {
+	f := strings.TrimSpace(filename)
+	if f == "" {
+		return ""
+	}
+	if ext := filepath.Ext(f); len(ext) <= 5 {
+		f = strings.TrimSuffix(f, ext)
+	}
+	f = strings.TrimSpace(f)
+	// First bracketed token that is neither a CRC stamp nor a resolution.
+	for _, m := range reFileBracket.FindAllStringSubmatch(f, -1) {
+		if !reCRC.MatchString(m[1]) && !reResToken.MatchString(m[1]) {
+			return m[1]
+		}
+	}
+	if m := reFileGroup.FindStringSubmatch(f); len(m) > 1 &&
+		!reResToken.MatchString(m[1]) && !reCRC.MatchString(m[1]) {
+		return m[1]
 	}
 	return ""
 }

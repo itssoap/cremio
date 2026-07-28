@@ -65,7 +65,7 @@ type HistoryModel struct {
 }
 
 func NewHistoryModel(hist *history.WatchHistory, client *stremio.Client, cfg *config.Config) HistoryModel {
-	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	l := newList()
 	l.Title = "Watch History"
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(true)

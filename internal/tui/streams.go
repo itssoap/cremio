@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sort"
 	"strings"
 	"sync"
@@ -137,7 +138,22 @@ func providerTag(s stremio.Stream) string {
 	if name := strings.TrimSpace(s.Name); strings.Contains(name, "\n") {
 		return strings.TrimSpace(name[:strings.IndexByte(name, '\n')])
 	}
+	// Single-line names like "GDrive 2160p": the first token is the addon brand
+	// unless it is pure release info (e.g. "1080p - WEB-DL - [FLE]").
+	if fields := strings.Fields(s.Name); len(fields) > 0 && !isQualityToken(fields[0]) {
+		return fields[0]
+	}
 	return ""
+}
+
+// isQualityToken reports whether a token is resolution/quality info rather than
+// an addon or provider name.
+func isQualityToken(t string) bool {
+	switch strings.ToLower(t) {
+	case "4k", "2160p", "1080p", "720p", "480p", "uhd", "fhd", "hd", "sd":
+		return true
+	}
+	return false
 }
 
 type StreamsModel struct {
@@ -166,7 +182,7 @@ type StreamsModel struct {
 	height        int
 
 	// Download state
-	downloadMsg     string
+	downloadMsg string
 
 	// Release group selector (batch download: groups first)
 	rgSelectorActive bool
@@ -241,7 +257,7 @@ func (m *StreamsModel) popupVisibleRows() int {
 }
 
 func NewStreamsModel(client *stremio.Client, cfg *config.Config) StreamsModel {
-	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	l := newList()
 	l.Title = "Streams"
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(false)
@@ -295,11 +311,9 @@ func (m StreamsModel) LoadStreams(nav NavigateToStreamsMsg) tea.Cmd {
 			wg.Add(1)
 			go func(i int, url string) {
 				defer wg.Done()
-				resp, err := client.FetchStreams(ctx, url, nav.Type, nav.ID)
-				if err != nil {
-					return
-				}
-				results[i] = res{streams: resp.Streams}
+				// Retry + drop error placeholders here too, so a rate-limited
+				// single view recovers instead of showing "Rate Limit Exceeded".
+				results[i] = res{streams: fetchStreamsWithRetry(ctx, client, url, nav.Type, nav.ID)}
 			}(i, addonURL)
 		}
 		wg.Wait()
@@ -317,10 +331,47 @@ func (m StreamsModel) LoadStreams(nav NavigateToStreamsMsg) tea.Cmd {
 	}
 }
 
+// fetchStreamsWithRetry fetches an addon's streams and returns only real content
+// streams. Aggregators rate-limit and answer HTTP 200 with a single non-content
+// "Rate Limit Exceeded" placeholder; that is indistinguishable from success by
+// the error alone, so it is detected (a response that has streams but none are
+// content) and retried with exponential backoff + jitter. A genuinely empty
+// result (zero streams) is returned as-is. Placeholder streams are never
+// returned, so a still-limited episode contributes nothing rather than a fake row.
+func fetchStreamsWithRetry(ctx context.Context, client *stremio.Client, addonURL, contentType, id string) []stremio.Stream {
+	const maxAttempts = 4
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err := client.FetchStreams(ctx, addonURL, contentType, id)
+		if err == nil {
+			var content []stremio.Stream
+			for _, s := range resp.Streams {
+				if s.IsContent() {
+					content = append(content, s)
+				}
+			}
+			// Real streams, or a genuine empty result -> done.
+			if len(content) > 0 || len(resp.Streams) == 0 {
+				return content
+			}
+			// Only non-content streams came back (error placeholder) -> retry.
+		}
+		if attempt < maxAttempts {
+			backoff := time.Duration(300<<uint(attempt-1))*time.Millisecond + time.Duration(rand.Intn(200))*time.Millisecond
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
 func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter) tea.Cmd {
 	// Snapshot the addon list to avoid racing with config mutations.
 	addons := append([]string(nil), m.config.Addons...)
 	client := m.client
+	perAddon := m.config.StreamFetchConcurrencyOrDefault()
 	return func() tea.Msg {
 		ctx := context.Background()
 
@@ -336,11 +387,16 @@ func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter)
 		}
 		results := make([]res, len(nav.Videos)*len(addons))
 
-		// ponytail: fixed pool of 5. Aggregator addons (e.g. AIOStreams) return
-		// truncated/empty results when hit with episodes*addons requests at once,
-		// which silently drops whole episodes. Bounding concurrency keeps every
-		// episode's response intact. Make it configurable if throughput matters.
-		sem := make(chan struct{}, 5)
+		// Bound concurrency PER ADDON (not globally): aggregators return
+		// truncated/placeholder results and drop whole episodes when hit with
+		// many concurrent requests, so requests to one addon are serialized by
+		// default (StreamFetchConcurrency, default 1) while different addons
+		// still run in parallel. fetchStreamsWithRetry recovers stragglers.
+		addonSem := make(map[string]chan struct{}, len(addons))
+		for _, a := range addons {
+			addonSem[a] = make(chan struct{}, perAddon)
+		}
+
 		var wg sync.WaitGroup
 		for vi, video := range nav.Videos {
 			label := fmt.Sprintf("S%02dE%02d", video.Season, video.Episode)
@@ -349,19 +405,15 @@ func (m StreamsModel) LoadAllStreams(nav NavigateToAllStreamsMsg, filter Filter)
 				idx := vi*len(addons) + ai
 				go func(idx int, k key, label, videoID, addonURL string) {
 					defer wg.Done()
+					sem := addonSem[addonURL]
 					sem <- struct{}{}
 					defer func() { <-sem }()
-					r := res{key: k, label: label, videoID: videoID}
-					resp, err := client.FetchStreams(ctx, addonURL, nav.Type, videoID)
-					if err != nil {
-						// One retry: transient overload can drop a request entirely.
-						time.Sleep(300 * time.Millisecond)
-						resp, err = client.FetchStreams(ctx, addonURL, nav.Type, videoID)
+					results[idx] = res{
+						key:     k,
+						label:   label,
+						videoID: videoID,
+						streams: fetchStreamsWithRetry(ctx, client, addonURL, nav.Type, videoID),
 					}
-					if err == nil {
-						r.streams = resp.Streams
-					}
-					results[idx] = r
 				}(idx, key{vi, ai}, label, video.ID, addonURL)
 			}
 		}
@@ -433,7 +485,7 @@ func passesGlobalFilters(gf config.GlobalFilters, item streamItem) bool {
 	if gf.Type != "" && !ParseFilter(gf.Type).Match(streamTypeLabel(s)) {
 		return false
 	}
-	if gf.ReleaseGroup != "" && !ParseFilter(gf.ReleaseGroup).Match(player.ExtractReleaseGroup(s.Name)) {
+	if gf.ReleaseGroup != "" && !ParseFilter(gf.ReleaseGroup).Match(player.ReleaseGroup(s.Name, s.Filename())) {
 		return false
 	}
 	return true
@@ -491,7 +543,7 @@ func (m *StreamsModel) isBatchMode() bool {
 // episode in a chosen group is the SAME encode, not an arbitrary mix of the
 // group's BluRay / WEB-DL / codec variants.
 func releaseVariant(s stremio.Stream) string {
-	parts := []string{player.ExtractReleaseGroup(s.Name)}
+	parts := []string{player.ReleaseGroup(s.Name, s.Filename())}
 	if res := player.ParseResolution(s.Name, s.Title, s.Description); res != "" {
 		parts = append(parts, res)
 	}
@@ -501,7 +553,15 @@ func releaseVariant(s stremio.Stream) string {
 	if codec := player.ParseCodec(s.Name, s.Title, s.Description); codec != "" {
 		parts = append(parts, codec)
 	}
-	return strings.Join(parts, " - ")
+	variant := strings.Join(parts, " - ")
+	// A season pack shares its release group/res/codec with the per-episode
+	// files of the same group, but is a distinct thing (one release covering the
+	// whole season). Keep it in its own variant so it neither collapses into nor
+	// double-downloads alongside the per-episode files.
+	if player.IsSeasonPack(s.Filename()) {
+		variant += " (Season Pack)"
+	}
+	return variant
 }
 
 // collectReleaseGroups extracts unique release groups with metadata from visible streams.
@@ -510,6 +570,7 @@ func (m *StreamsModel) collectReleaseGroups() []releaseGroupInfo {
 		resolution string
 		episodes   map[string]bool
 		totalSize  int64
+		packSized  bool
 	}
 	groups := make(map[string]*groupData)
 	var order []string
@@ -528,8 +589,18 @@ func (m *StreamsModel) collectReleaseGroups() []releaseGroupInfo {
 		}
 		if si.episodeLabel != "" && !gd.episodes[si.episodeLabel] {
 			gd.episodes[si.episodeLabel] = true
-			sizeBytes, _ := player.ParseSize(si.stream.Name, si.stream.Title)
-			gd.totalSize += sizeBytes
+			// A season pack reports the whole-season size on every episode entry;
+			// count it once instead of multiplying it by the episode count.
+			if player.IsSeasonPack(si.fileName()) {
+				if !gd.packSized {
+					sizeBytes, _ := player.ParseSize(si.stream.Name, si.stream.Title)
+					gd.totalSize += sizeBytes
+					gd.packSized = true
+				}
+			} else {
+				sizeBytes, _ := player.ParseSize(si.stream.Name, si.stream.Title)
+				gd.totalSize += sizeBytes
+			}
 		}
 		if gd.resolution == "" {
 			gd.resolution = player.ParseResolution(si.stream.Name, si.stream.Title)
@@ -570,12 +641,16 @@ func (m *StreamsModel) collectEpisodesForGroup(group string) []episodeSelection 
 			continue
 		}
 		fname := si.fileName()
-		// Distinguish alternate cuts by file name; fall back to URL when the
-		// addon gives no name so genuine dups still collapse.
-		dedupKey := fname
-		if dedupKey == "" {
-			dedupKey = url
+		// Key rows by episode identity + file so: alternate cuts of one episode
+		// (same videoID, different file) both show; a genuine duplicate (same
+		// episode, same file from another source) collapses; and a season pack
+		// offered per episode (same file name, different videoID) keeps one row
+		// per episode instead of collapsing to a single row.
+		fileKey := fname
+		if fileKey == "" {
+			fileKey = url
 		}
+		dedupKey := si.videoID + "|" + fileKey
 		if seen[dedupKey] {
 			continue
 		}
@@ -618,8 +693,13 @@ func (m *StreamsModel) enqueueBatchDownload(mgr *player.DownloadManager, group s
 			continue
 		}
 		fname := ep.filename
-		if fname == "" {
+		// A season-pack file name has no episode marker and is identical across
+		// every episode, so writing them verbatim would collide on disk. Give
+		// each pack episode a unique, episode-tagged name.
+		if fname == "" || player.IsSeasonPack(fname) {
 			fname = fmt.Sprintf("%s - %s%s", m.metaName, ep.label, player.GuessExtension(ep.url))
+		} else {
+			fname = player.EnsureContainer(fname, ep.url)
 		}
 		destPath := player.EpisodePath(downloadDir, m.metaName, m.metaYear, ep.season, fname)
 		mgr.Enqueue(fname, ep.url, destPath)
@@ -639,6 +719,8 @@ func (m *StreamsModel) enqueueSingleDownload(mgr *player.DownloadManager, item s
 				fname = fmt.Sprintf("%s (%s)", m.metaName, y)
 			}
 			fname += player.GuessExtension(url)
+		} else {
+			fname = player.EnsureContainer(fname, url)
 		}
 		destPath := player.MoviePath(downloadDir, m.metaName, m.metaYear, fname)
 		mgr.Enqueue(fname, url, destPath)
@@ -651,6 +733,8 @@ func (m *StreamsModel) enqueueSingleDownload(mgr *player.DownloadManager, item s
 	season, episode := history.ParseEpisodeID(videoID)
 	if fname == "" {
 		fname = fmt.Sprintf("%s - S%02dE%02d%s", m.metaName, season, episode, player.GuessExtension(url))
+	} else {
+		fname = player.EnsureContainer(fname, url)
 	}
 	destPath := player.EpisodePath(downloadDir, m.metaName, m.metaYear, season, fname)
 	mgr.Enqueue(fname, url, destPath)
@@ -947,7 +1031,7 @@ func (m StreamsModel) infoPanel() string {
 	}
 
 	// Release group
-	if g := player.ExtractReleaseGroup(s.Name); g != "" && g != "Unknown" {
+	if g := player.ReleaseGroup(s.Name, item.fileName()); g != "" && g != "Unknown" {
 		rows = append(rows, label("Group:   ", g))
 	}
 

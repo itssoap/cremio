@@ -48,6 +48,8 @@ It looks for the binary to replace in this order:
 | Only check for an update (no changes) | `... install.ps1))) -CheckOnly` | `... \| bash -s -- --check` |
 | Update to the newest **pre-release** | `... install.ps1))) -PreRelease` | `... \| bash -s -- --pre-release` |
 | Skip modifying PATH | `... install.ps1))) -NoPath` | `... \| bash -s -- --no-path` |
+| Uninstall (keeps history/session by default) | `... install.ps1))) -Uninstall` | `... \| bash -s -- --uninstall` |
+| Uninstall and delete config/data too | `... install.ps1))) -Uninstall -PurgeData` | `... \| bash -s -- --uninstall --purge-data` |
 
 On Linux/macOS, append flags after `bash -s --`:
 
@@ -72,6 +74,41 @@ the downloaded script into a script block:
 Every download is verified against the published SHA-256 before it replaces
 your existing binary; a mismatch aborts the update without touching the
 installed file.
+
+#### Uninstall
+
+Uninstalling removes the `cremio` binary, its version marker, and the install
+directory from your PATH. Your config and data (watch history, saved account
+session) are **kept by default** and you are asked before they are deleted; add
+the purge flag to remove them too. A `cremio` binary in your current directory
+(a local build) is never touched.
+
+**Windows (PowerShell):**
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/itssoap/cremio/main/install.ps1))) -Uninstall
+
+# Also delete config/data (history, session) without prompting:
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/itssoap/cremio/main/install.ps1))) -Uninstall -PurgeData
+```
+
+**Linux / macOS / FreeBSD:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itssoap/cremio/main/install.sh | bash -s -- --uninstall
+
+# Also delete config/data (history, session) without prompting:
+curl -fsSL https://raw.githubusercontent.com/itssoap/cremio/main/install.sh | bash -s -- --uninstall --purge-data
+```
+
+What gets removed / where data lives:
+
+| | Windows | Linux / macOS / FreeBSD |
+|--|---------|-------------------------|
+| Binary | `%LOCALAPPDATA%\cremio\bin\cremio.exe` | `~/.local/bin/cremio` |
+| Version marker | `%LOCALAPPDATA%\cremio\.version` | `~/.local/share/cremio/.version` |
+| PATH entry | user PATH | shell profile line (a `.bak` backup is saved) |
+| Config/data (kept unless purged) | `%APPDATA%\cremio\` | `~/.config/cremio/` |
 
 ## Features
 
@@ -178,7 +215,8 @@ The config file holds the list of installed addon base URLs and optional setting
   },
   "download_dir": "",
   "download_use_aria2c": true,
-  "download_parallel": 1
+  "download_parallel": 1,
+  "stream_fetch_concurrency": 1
 }
 ```
 
@@ -198,6 +236,7 @@ the bad file is renamed to `config.json.invalid` and defaults are restored.
 | `download_dir` | string | `""` | Base download directory. Priority: this > OS Downloads folder > current directory |
 | `download_use_aria2c` | boolean | `true` | Use aria2c for downloads if available in PATH (falls back to Go HTTP) |
 | `download_parallel` | integer | `1` | Number of simultaneous downloads |
+| `stream_fetch_concurrency` | integer | `1` | Max concurrent stream requests sent to a single addon when loading a whole season. Aggregators (e.g. AIOStreams) rate-limit and drop episodes above 1, so keep this at 1 unless your addons tolerate more. Different addons are always queried in parallel |
 
 ## Watch History
 

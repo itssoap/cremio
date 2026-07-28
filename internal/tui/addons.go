@@ -60,7 +60,7 @@ type addonValidateErrorMsg struct {
 }
 
 func NewAddonsModel(client *stremio.Client, cfg *config.Config) AddonsModel {
-	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	l := newList()
 	l.Title = "Installed Addons"
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(false)

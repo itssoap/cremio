@@ -69,7 +69,7 @@ func NewSearchModel(client *stremio.Client, cfg *config.Config) SearchModel {
 	ti.Placeholder = "Search movies & series..."
 	ti.CharLimit = 100
 
-	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	l := newList()
 	l.Title = "Results"
 	l.SetShowHelp(false)
 	l.SetFilteringEnabled(false)

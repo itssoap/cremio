@@ -3,11 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/itssoap/cremio/internal/account"
 	"github.com/itssoap/cremio/internal/config"
 	"github.com/itssoap/cremio/internal/history"
 	"github.com/itssoap/cremio/internal/player"
@@ -21,6 +23,7 @@ const (
 	ScreenSearch
 	ScreenAddons
 	ScreenFilters
+	ScreenAccount
 	ScreenHistory
 	ScreenDetail
 	ScreenStreams
@@ -42,6 +45,7 @@ type App struct {
 	search     SearchModel
 	addons     AddonsModel
 	filters    GlobalFiltersModel
+	account    AccountModel
 	historyTab HistoryModel
 	detail     DetailModel
 	streams    StreamsModel
@@ -74,6 +78,7 @@ func NewApp(cfg *config.Config, hist *history.WatchHistory, incognito bool) App 
 		search:     NewSearchModel(client, cfg),
 		addons:     NewAddonsModel(client, cfg),
 		filters:    NewGlobalFiltersModel(cfg),
+		account:    NewAccountModel(cfg, incognito),
 		historyTab: NewHistoryModel(hist, client, cfg),
 		detail:     detail,
 		streams:    NewStreamsModel(client, cfg),
@@ -82,7 +87,23 @@ func NewApp(cfg *config.Config, hist *history.WatchHistory, incognito bool) App 
 }
 
 func (a App) Init() tea.Cmd {
-	return tea.Batch(a.home.Init(), a.addons.Init(), a.search.Init())
+	cmds := []tea.Cmd{a.home.Init(), a.addons.Init(), a.search.Init()}
+	// If a saved session is present (and not incognito), validate it and sync
+	// on startup, in the background.
+	if !a.incognito && a.account.Client().LoggedIn() {
+		cmds = append(cmds, a.account.ValidateCmd())
+	}
+	return tea.Batch(cmds...)
+}
+
+// newList builds a list.Model with the built-in Quit binding disabled. The
+// bubbles list binds Quit to both "q" and "esc" and returns tea.Quit itself,
+// which would let esc kill the app. The app owns quitting (ctrl+c / q), so esc
+// stays a back / clear-filter key only.
+func newList() list.Model {
+	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	l.KeyMap.Quit.SetEnabled(false)
+	return l
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -95,6 +116,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.search.SetSize(msg.Width-4, contentHeight)
 		a.addons.SetSize(msg.Width-4, contentHeight)
 		a.filters.SetSize(msg.Width-4, contentHeight)
+		a.account.SetSize(msg.Width-4, contentHeight)
 		a.historyTab.SetSize(msg.Width-4, contentHeight)
 		a.detail.SetSize(msg.Width-4, contentHeight)
 		a.streams.SetSize(msg.Width-4, contentHeight)
@@ -163,6 +185,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.screen == ScreenFilters && a.filters.editingInput() {
 				break
 			}
+			if a.screen == ScreenAccount && a.account.editingInput() {
+				break
+			}
 			switch a.screen {
 			case ScreenHome:
 				if a.hasHistory() {
@@ -190,6 +215,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.screen = ScreenFilters
 				return a, nil
 			case ScreenFilters:
+				a.screen = ScreenAccount
+				return a, nil
+			case ScreenAccount:
 				a.screen = ScreenHome
 				return a, a.home.Init()
 			}
@@ -311,6 +339,53 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case downloadJobDoneMsg:
 		// Job finished, try processing next
 		return a, a.processDownloadQueue()
+
+	case accountLoginMsg:
+		if a.account.ApplyLogin(msg) {
+			a.account.SetStatus("Syncing...")
+			return a, a.accountSyncCmd()
+		}
+		return a, nil
+
+	case accountLogoutMsg:
+		a.account.ApplyLogout()
+		return a, nil
+
+	case accountSyncRequestMsg:
+		if a.incognito {
+			return a, nil
+		}
+		return a, a.accountSyncCmd()
+
+	case accountSyncResultMsg:
+		var cmd tea.Cmd
+		var parts []string
+		// Apply whatever was fetched, even on a partial error (e.g. addons
+		// succeeded but the library call failed).
+		if msg.addonURLs != nil {
+			merged, added := account.MergeAddonURLs(a.config.Addons, msg.addonURLs)
+			if added > 0 {
+				a.config.Addons = merged
+				_ = a.config.Save()
+				cmd = a.rebuildAddonViews()
+			}
+			parts = append(parts, fmt.Sprintf("%d addon(s) added", added))
+		}
+		if msg.library != nil && a.history != nil && !a.incognito {
+			n := account.ApplyLibraryToHistory(a.history, msg.library)
+			if n > 0 {
+				_ = a.history.Save()
+				a.historyTab.Refresh()
+			}
+			parts = append(parts, fmt.Sprintf("%d history item(s)", n))
+		}
+		if msg.err != nil {
+			a.account.SetStatus("Sync incomplete: " + msg.err.Error())
+		} else {
+			a.account.SetLastSync(time.Now())
+			a.account.SetStatus("Synced: " + strings.Join(parts, ", "))
+		}
+		return a, cmd
 	}
 
 	var cmd tea.Cmd
@@ -323,6 +398,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.addons, cmd = a.addons.Update(msg)
 	case ScreenFilters:
 		a.filters, cmd = a.filters.Update(msg)
+	case ScreenAccount:
+		a.account, cmd = a.account.Update(msg)
 	case ScreenHistory:
 		a.historyTab, cmd = a.historyTab.Update(msg)
 	case ScreenDetail:
@@ -354,6 +431,8 @@ func (a App) View() string {
 		content = a.addons.View()
 	case ScreenFilters:
 		content = a.filters.View()
+	case ScreenAccount:
+		content = a.account.View()
 	case ScreenHistory:
 		content = a.historyTab.View()
 	case ScreenDetail:
@@ -423,6 +502,9 @@ func (a App) isTyping() bool {
 	if a.screen == ScreenFilters && a.filters.editingInput() {
 		return true
 	}
+	if a.screen == ScreenAccount && a.account.editingInput() {
+		return true
+	}
 	return a.listFiltering()
 }
 
@@ -464,7 +546,7 @@ func (a App) renderTabs() string {
 	if a.hasHistory() {
 		tabs = append(tabs, tab{"History", ScreenHistory})
 	}
-	tabs = append(tabs, tab{"Search", ScreenSearch}, tab{"Addons", ScreenAddons}, tab{"Filters", ScreenFilters})
+	tabs = append(tabs, tab{"Search", ScreenSearch}, tab{"Addons", ScreenAddons}, tab{"Filters", ScreenFilters}, tab{"Account", ScreenAccount})
 
 	var rendered []string
 	if a.incognito {
@@ -512,3 +594,44 @@ type NavigateToAllStreamsMsg struct {
 
 type AddonAddedMsg struct{}
 type AddonRemovedMsg struct{}
+
+// accountSyncResultMsg carries the data fetched by a background account sync.
+// The data is applied to config/history on the main Update loop (not in the
+// command goroutine) to avoid racing the shared config/history state.
+type accountSyncResultMsg struct {
+	addonURLs []string              // fetched transport URLs, nil when addons not synced
+	library   []account.LibraryItem // fetched library, nil when history not synced
+	err       error
+}
+
+// accountSyncCmd fetches the addon collection and/or library in the background.
+func (a App) accountSyncCmd() tea.Cmd {
+	client := a.account.Client()
+	syncAddons := a.config.Account.SyncAddons
+	syncHistory := a.config.Account.SyncHistory && !a.incognito
+	return func() tea.Msg {
+		if !client.LoggedIn() {
+			return accountSyncResultMsg{err: fmt.Errorf("not logged in")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		var res accountSyncResultMsg
+		if syncAddons {
+			addons, err := client.AddonCollection(ctx)
+			if err != nil {
+				return accountSyncResultMsg{err: err}
+			}
+			res.addonURLs = account.AddonURLs(addons)
+		}
+		if syncHistory {
+			items, err := client.Library(ctx)
+			if err != nil {
+				res.err = err
+				return res
+			}
+			res.library = items
+		}
+		return res
+	}
+}

@@ -68,13 +68,13 @@ type CatalogResponse struct {
 }
 
 type MetaPreview struct {
-	ID          string `json:"id"`
-	Type        string `json:"type"`
-	Name        string `json:"name"`
-	Poster      string `json:"poster,omitempty"`
-	PosterShape string `json:"posterShape,omitempty"`
-	Description string `json:"description,omitempty"`
-	ReleaseInfo string `json:"releaseInfo,omitempty"`
+	ID          string     `json:"id"`
+	Type        string     `json:"type"`
+	Name        string     `json:"name"`
+	Poster      string     `json:"poster,omitempty"`
+	PosterShape string     `json:"posterShape,omitempty"`
+	Description string     `json:"description,omitempty"`
+	ReleaseInfo string     `json:"releaseInfo,omitempty"`
 	IMDBRating  FlexString `json:"imdbRating,omitempty"`
 }
 
@@ -92,11 +92,11 @@ type Meta struct {
 	ReleaseInfo string     `json:"releaseInfo,omitempty"`
 	IMDBRating  FlexString `json:"imdbRating,omitempty"`
 	IMDBID      string     `json:"imdb_id,omitempty"`
-	Runtime     string   `json:"runtime,omitempty"`
-	Genres      []string `json:"genres,omitempty"`
-	Director    []string `json:"director,omitempty"`
-	Cast        []string `json:"cast,omitempty"`
-	Videos      []Video  `json:"videos,omitempty"`
+	Runtime     string     `json:"runtime,omitempty"`
+	Genres      []string   `json:"genres,omitempty"`
+	Director    []string   `json:"director,omitempty"`
+	Cast        []string   `json:"cast,omitempty"`
+	Videos      []Video    `json:"videos,omitempty"`
 }
 
 type Video struct {
@@ -156,6 +156,14 @@ func (s Stream) VideoSize() int64 {
 		return s.BehaviorHints.VideoSize
 	}
 	return 0
+}
+
+// IsContent reports whether the stream points at playable content (a direct
+// URL, a torrent infohash, or a YouTube id). It is false for notice/error
+// streams that only carry an externalUrl, such as an aggregator's "Rate Limit
+// Exceeded" placeholder, which must not be mistaken for a successful result.
+func (s Stream) IsContent() bool {
+	return s.URL != "" || s.InfoHash != "" || s.YtID != ""
 }
 
 type ProxyHeaders struct {
