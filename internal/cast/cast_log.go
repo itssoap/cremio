@@ -5,35 +5,50 @@ package cast
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
-// Cast logging is opt-in and off by default. Set CREMIO_CAST_LOG to a file path
-// (e.g. CREMIO_CAST_LOG=cast.log) to record discovery, connect, and load steps
-// for diagnosing device issues. It never writes to stdout/stderr, so it does
-// not disturb the TUI.
-var castLog = newCastLogger()
+// Cast logging records discovery, connect, and load steps to help diagnose
+// device issues. In the cast build it is ON by default and writes to a
+// timestamped file in the current working directory, e.g.
+// cremio-cast-20060102-150405.log, created lazily on the first cast activity
+// (so opening the app without casting writes nothing). Override the location by
+// setting CREMIO_CAST_LOG to a file path, or disable with CREMIO_CAST_LOG=off
+// (also 0/false/no). It never writes to stdout/stderr, so the TUI is undisturbed.
+var castLog = &castLogger{}
 
 type castLogger struct {
-	mu sync.Mutex
-	f  *os.File
+	once     sync.Once
+	mu       sync.Mutex
+	f        *os.File
+	disabled bool
 }
 
-func newCastLogger() *castLogger {
-	path := os.Getenv("CREMIO_CAST_LOG")
+func (l *castLogger) open() {
+	env := strings.TrimSpace(os.Getenv("CREMIO_CAST_LOG"))
+	switch strings.ToLower(env) {
+	case "off", "0", "false", "no":
+		l.disabled = true
+		return
+	}
+	path := env
 	if path == "" {
-		return &castLogger{}
+		path = filepath.Join(".", "cremio-cast-"+time.Now().Format("20060102-150405")+".log")
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		return &castLogger{}
+		l.disabled = true
+		return
 	}
-	return &castLogger{f: f}
+	l.f = f
 }
 
 func castLogf(format string, args ...any) {
-	if castLog.f == nil {
+	castLog.once.Do(castLog.open)
+	if castLog.disabled || castLog.f == nil {
 		return
 	}
 	castLog.mu.Lock()
