@@ -21,6 +21,9 @@ type queueSession struct {
 	r     renderer
 	items []MediaItem
 
+	interval time.Duration // snapshot of queuePollInterval, so watch() never
+	// races with a test mutating the package var
+
 	mu      sync.Mutex
 	idx     int
 	stopped bool
@@ -34,7 +37,7 @@ func newQueueSession(r renderer, items []MediaItem, startIndex int) (*queueSessi
 	if startIndex < 0 || startIndex >= len(items) {
 		startIndex = 0
 	}
-	s := &queueSession{r: r, items: items, idx: startIndex, quit: make(chan struct{})}
+	s := &queueSession{r: r, items: items, idx: startIndex, interval: queuePollInterval, quit: make(chan struct{})}
 	if err := s.loadCurrent(); err != nil {
 		return nil, err
 	}
@@ -51,7 +54,7 @@ func (s *queueSession) loadCurrent() error {
 
 // watch polls for end-of-item and advances the queue until stopped.
 func (s *queueSession) watch() {
-	t := time.NewTicker(queuePollInterval)
+	t := time.NewTicker(s.interval)
 	defer t.Stop()
 	for {
 		select {
