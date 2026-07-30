@@ -90,6 +90,7 @@ func (b *dlnaBackend) scan(ctx context.Context, out chan<- []Device) {
 	b.mu.Lock()
 	b.clients = fresh
 	b.mu.Unlock()
+	castLogf("dlna: scan found %d renderer(s)", len(devs))
 	select {
 	case out <- devs:
 	case <-ctx.Done():
@@ -103,6 +104,7 @@ func (b *dlnaBackend) Connect(_ context.Context, dev Device) (renderer, error) {
 	if c == nil {
 		return nil, fmt.Errorf("dlna: device %q not found; rescan and retry", dev.Name)
 	}
+	castLogf("dlna: connected to %q at %s", dev.Name, dev.Addr)
 	return &dlnaRenderer{tr: c}, nil
 }
 
@@ -115,13 +117,19 @@ type dlnaRenderer struct {
 }
 
 func (r *dlnaRenderer) Load(_ context.Context, item MediaItem) error {
+	castLogf("dlna: SetAVTransportURI url=%.80s", item.URL)
 	if err := r.tr.SetAVTransportURI(0, item.URL, didlLite(item)); err != nil {
+		castLogf("dlna: SetAVTransportURI failed: %v", err)
 		return err
 	}
 	r.mu.Lock()
 	r.started = false
 	r.mu.Unlock()
-	return r.tr.Play(0, "1")
+	err := r.tr.Play(0, "1")
+	if err != nil {
+		castLogf("dlna: Play failed: %v", err)
+	}
+	return err
 }
 
 func (r *dlnaRenderer) Play() error  { return r.tr.Play(0, "1") }

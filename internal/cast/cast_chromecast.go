@@ -89,6 +89,7 @@ func (b *chromecastBackend) scan(ctx context.Context, out chan<- []Device) {
 	b.mu.Lock()
 	b.entries = fresh
 	b.mu.Unlock()
+	castLogf("chromecast: scan found %d device(s)", len(devs))
 	select {
 	case out <- devs:
 	case <-ctx.Done():
@@ -102,10 +103,13 @@ func (b *chromecastBackend) Connect(_ context.Context, dev Device) (renderer, er
 	if !ok {
 		return nil, fmt.Errorf("chromecast: device %q not found; rescan and retry", dev.Name)
 	}
+	castLogf("chromecast: connecting to %q at %s:%d", dev.Name, e.GetAddr(), e.GetPort())
 	app := application.NewApplication(application.WithConnectionRetries(3))
 	if err := app.Start(e.GetAddr(), e.GetPort()); err != nil {
+		castLogf("chromecast: connect to %q failed: %v", dev.Name, err)
 		return nil, fmt.Errorf("chromecast: connect to %q: %w", dev.Name, err)
 	}
+	castLogf("chromecast: connected to %q", dev.Name)
 	return &chromecastRenderer{app: app}, nil
 }
 
@@ -118,6 +122,13 @@ type chromecastRenderer struct {
 	started bool
 }
 
+// chromecastLoadRetries is how many times Load is attempted. Launching the
+// Default Media Receiver waits on a hardcoded 5s inside go-chromecast; a slow
+// device (cold start, Google TV) can exceed it, but the receiver usually
+// finishes launching shortly after, so a later attempt finds it already up and
+// succeeds.
+var chromecastLoadRetries = 3
+
 func (r *chromecastRenderer) Load(_ context.Context, item MediaItem) error {
 	mime := item.MimeType
 	if mime == "" {
@@ -126,7 +137,20 @@ func (r *chromecastRenderer) Load(_ context.Context, item MediaItem) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.started = false
-	return r.app.Load(item.URL, 0, mime, false, false, false)
+	var err error
+	for attempt := 1; attempt <= chromecastLoadRetries; attempt++ {
+		castLogf("chromecast: load attempt %d/%d, mime=%s url=%.80s", attempt, chromecastLoadRetries, mime, item.URL)
+		err = r.app.Load(item.URL, 0, mime, false, false, false)
+		if err == nil {
+			castLogf("chromecast: load ok on attempt %d", attempt)
+			return nil
+		}
+		castLogf("chromecast: load attempt %d failed: %v", attempt, err)
+		if attempt < chromecastLoadRetries {
+			time.Sleep(3 * time.Second) // give the receiver time to finish launching
+		}
+	}
+	return err
 }
 
 func (r *chromecastRenderer) Play() error {

@@ -88,6 +88,7 @@ func (a *aggregateCaster) Cast(ctx context.Context, dev Device, item MediaItem) 
 }
 
 func (a *aggregateCaster) CastQueue(ctx context.Context, dev Device, items []MediaItem, startIndex int) (Session, error) {
+	castLogf("cast: request %d item(s) to %q (%s), start=%d", len(items), dev.Name, dev.Kind, startIndex)
 	b := a.backendFor(dev)
 	if b == nil {
 		return nil, fmt.Errorf("cast: no backend for device %q (%s)", dev.Name, dev.Kind)
@@ -98,9 +99,11 @@ func (a *aggregateCaster) CastQueue(ctx context.Context, dev Device, items []Med
 	}
 	sess, err := newQueueSession(r, items, startIndex)
 	if err != nil {
+		castLogf("cast: initial load failed: %v", err)
 		_ = r.Close()
 		return nil, err
 	}
+	castLogf("cast: session started on %q", dev.Name)
 	return sess, nil
 }
 
