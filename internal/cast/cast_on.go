@@ -18,8 +18,11 @@ func New() Caster {
 	return newAggregateCaster(backends()...)
 }
 
-// backends returns the protocol backends compiled into this build. 3b/3c append
-// the real Chromecast and DLNA backends here.
+// backends returns the protocol backends compiled into this build. DLNA is
+// first (priority: native audio/subtitle switching via the TV remote); the
+// Chromecast backend is appended in sub-phase 3b.
 func backends() []backend {
-	return nil
+	return []backend{
+		newDLNABackend(),
+	}
 }

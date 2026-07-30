@@ -139,6 +139,28 @@ The stub implements all methods as no-ops returning `ErrCastUnavailable`, and
   privacy-conscious user can pick the default build.
 - Device responses are untrusted input; parse defensively (names/addresses).
 
+## Audio and subtitle switching
+
+Casting delegates decoding to the device, so track switching is the device's job,
+not cremio's (unlike local mpv, which cremio controls fully). This drives the
+backend priority.
+
+- DLNA (priority): the TV plays the file with its native player, so the user
+  switches audio and subtitles with the TV's own remote / on-screen menu.
+  Embedded MKV audio and subtitle tracks work through the TV UI. This is the
+  convenient, familiar path, so DLNA is implemented FIRST and its devices sort
+  first in the picker.
+- Chromecast: the default receiver cannot switch embedded MKV audio/subtitle
+  tracks. It plays the file's default audio. External subtitle side-loading (a
+  separate WebVTT track cremio could toggle) is possible but DEFERRED (Phase 5b,
+  needs a subtitle source); embedded-audio switching needs a custom receiver and
+  is out of scope.
+- The popup shows a per-device hint: DLNA -> "use your TV remote for
+  audio/subtitles"; Chromecast -> "plays default audio, track switching limited".
+
+Neither protocol re-encodes, so casting never affects quality; the library
+choice affects only the control channel, not playback.
+
 ## Phases
 
 1. Skeleton (DONE): `internal/cast` package only, imported by nothing. `cast.go`
@@ -169,8 +191,17 @@ The stub implements all methods as no-ops returning `ErrCastUnavailable`, and
    3a (DONE): the protocol-agnostic core + interfaces + fake + tests. No
       dependency, no device code; New() returns the aggregate with no backends
       (same runtime behaviour as the stub).
-   3b: chromecastBackend (mDNS + github.com/vishen/go-chromecast), tag-gated.
-   3c: dlnaBackend (SSDP + github.com/huin/goupnp AVTransport), tag-gated.
+   3b (DONE): dlnaBackend (SSDP + github.com/huin/goupnp AVTransport), done
+      FIRST because DLNA delivers the priority feature (native audio/subtitle
+      switching via the TV remote). SSDP rescans on an interval (keeps polling);
+      the renderer guards against a just-loaded STOPPED state so the queue does
+      not advance prematurely; DIDL-Lite metadata + mime guessing help renderers
+      accept the URL. Registered first so DLNA devices sort first. goupnp enters
+      go.mod but only under //go:build cast (verified: default binary links 0
+      goupnp symbols; cast binary is ~0.4 MB larger).
+   3c: chromecastBackend (mDNS + github.com/vishen/go-chromecast), tag-gated.
+      Plays the file's default audio; embedded track switching not supported by
+      the default receiver (external subtitle side-load deferred to 5b).
    The dependencies enter go.mod but are imported only under //go:build cast, so
    the default build never links them.
 4. Playlist: `CastQueue` from `buildPlaylist` -> `queueSession`. (Core landed in

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -11,8 +13,26 @@ import (
 	"github.com/itssoap/cremio/internal/stremio"
 )
 
+// fakeCaster is a deterministic Caster for TUI tests: it discovers nothing and
+// refuses to cast, so CastModel tests never touch the real network backend
+// (which the cast build would otherwise start).
+type fakeCaster struct{}
+
+func (fakeCaster) Discover(context.Context) (<-chan []cast.Device, error) {
+	ch := make(chan []cast.Device)
+	close(ch)
+	return ch, nil
+}
+func (fakeCaster) Cast(context.Context, cast.Device, cast.MediaItem) (cast.Session, error) {
+	return nil, errors.New("unavailable")
+}
+func (fakeCaster) CastQueue(context.Context, cast.Device, []cast.MediaItem, int) (cast.Session, error) {
+	return nil, errors.New("unavailable")
+}
+func (fakeCaster) Close() error { return nil }
+
 func TestCastModelFlow(t *testing.T) {
-	m := NewCastModel()
+	m := newCastModelWith(fakeCaster{})
 	m.SetSize(80, 24)
 
 	// Open with a castable item: popup shows, discovery starts.
@@ -51,7 +71,7 @@ func TestCastModelFlow(t *testing.T) {
 }
 
 func TestCastModelUncastableSelection(t *testing.T) {
-	m := NewCastModel()
+	m := newCastModelWith(fakeCaster{})
 	m.SetSize(80, 24)
 	m.Open(nil, 0, false) // nothing castable
 	if !strings.Contains(m.status, "not castable") {

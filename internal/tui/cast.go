@@ -57,7 +57,33 @@ type CastModel struct {
 }
 
 func NewCastModel() CastModel {
-	return CastModel{caster: cast.New()}
+	return newCastModelWith(cast.New())
+}
+
+// newCastModelWith builds a CastModel over a specific Caster. Tests inject a
+// fake so they never depend on real network discovery (which the real caster
+// performs in the cast build).
+func newCastModelWith(c cast.Caster) CastModel {
+	return CastModel{caster: c}
+}
+
+// trackHint explains how to change audio/subtitle tracks for the highlighted
+// (or active) device, since casting delegates track control to the device.
+func (m CastModel) trackHint() string {
+	var kind cast.DeviceKind
+	if m.cursor >= 0 && m.cursor < len(m.devices) {
+		kind = m.devices[m.cursor].Kind
+	} else if len(m.devices) == 0 {
+		return ""
+	}
+	switch kind {
+	case cast.KindDLNA:
+		return "Audio/subtitles: use your TV's own remote (native player menu)."
+	case cast.KindChromecast:
+		return "Plays the file's default audio; on-device track switching is limited."
+	default:
+		return ""
+	}
 }
 
 func (m *CastModel) SetSize(w, h int) { m.width = w; m.height = h }
@@ -290,6 +316,11 @@ func (m CastModel) View() string {
 
 	if m.castTo != "" {
 		b.WriteString("\n" + SubtitleStyle.Render("Now casting to "+m.castTo) + "\n")
+	}
+	// Per-device guidance on how to switch audio/subtitles, since casting hands
+	// track control to the device.
+	if hint := m.trackHint(); hint != "" {
+		b.WriteString("\n" + SubtitleStyle.Render(hint) + "\n")
 	}
 	if m.errMsg != "" {
 		b.WriteString("\n" + ErrorStyle.Render(m.errMsg) + "\n")
