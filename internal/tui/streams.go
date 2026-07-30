@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/itssoap/cremio/internal/cast"
 	"github.com/itssoap/cremio/internal/config"
 	"github.com/itssoap/cremio/internal/history"
 	"github.com/itssoap/cremio/internal/player"
@@ -525,6 +526,54 @@ func (m *StreamsModel) buildPlaylist(selected streamItem) (urls []string, startI
 		}
 	}
 	return urls, startIdx
+}
+
+// castTargets returns the media items to cast for the current selection. In
+// series playlist mode it returns the whole episode playlist (so casting plays
+// the season in sequence); otherwise the single selected stream. Only HTTP/HTTPS
+// URLs are castable (a device cannot fetch a magnet), so non-http entries are
+// dropped and the start index is remapped to the selected episode. Returns an
+// empty slice when nothing in the selection is castable.
+func (m *StreamsModel) castTargets() (items []cast.MediaItem, startIndex int, isPlaylist bool) {
+	sel, ok := m.list.SelectedItem().(streamItem)
+	if !ok {
+		return nil, 0, false
+	}
+	httpOnly := func(u string) bool {
+		return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+	}
+
+	if m.contentType == "series" && m.config.PlaylistEnabled() {
+		urls, start := m.buildPlaylist(sel)
+		selURL := ""
+		if start >= 0 && start < len(urls) {
+			selURL = urls[start]
+		}
+		newStart := 0
+		for _, u := range urls {
+			if !httpOnly(u) {
+				continue
+			}
+			if u == selURL {
+				newStart = len(items)
+			}
+			items = append(items, cast.MediaItem{URL: u, Title: player.FilenameFromURL(u)})
+		}
+		if len(items) > 0 {
+			return items, newStart, true
+		}
+		return nil, 0, false
+	}
+
+	url := sel.stream.PlayableURL()
+	if !httpOnly(url) {
+		return nil, 0, false
+	}
+	title := sel.fileName()
+	if title == "" {
+		title = m.metaName
+	}
+	return []cast.MediaItem{{URL: url, Title: title}}, 0, false
 }
 
 // isBatchMode returns true if the streams view is showing multi-episode results.
@@ -1091,7 +1140,11 @@ func (m StreamsModel) View() string {
 	if m.infoMode {
 		sections = append(sections, m.infoPanel())
 	}
-	sections = append(sections, HelpStyle.Render("/: filter • c: clear • d: download • i: info • D: downloads • enter: play • esc: back • q: quit"))
+	help := "/: filter • c: clear • d: download • i: info • D: downloads • enter: play • esc: back • q: quit"
+	if cast.Available {
+		help = "/: filter • c: clear • d: download • i: info • shift+c: cast • D: downloads • enter: play • esc: back • q: quit"
+	}
+	sections = append(sections, HelpStyle.Render(help))
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 

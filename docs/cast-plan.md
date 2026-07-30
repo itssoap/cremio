@@ -148,9 +148,14 @@ The stub implements all methods as no-ops returning `ErrCastUnavailable`, and
    variants compile and test. The `shift+c` gate was moved to Phase 2 (wiring a
    key to a not-yet-built popup is throwaway), so Phase 1 touches zero existing
    files and the default build is behaviourally identical.
-2. CastPopup model + `shift+c` ("C") gated on `cast.Available`, app-level like
-   the downloads popup, only while on the streams screen; polling discovery UI
-   against the stub (shows "no devices / cast unavailable in this build").
+2. CastPopup (DONE): `CastModel` popup in `internal/tui/cast.go` (shared, option
+   A), `shift+c` ("C") gated on `cast.Available` at app level and only while on
+   the streams screen, routed/overlaid like the downloads popup. Channel-based
+   discovery read-loop (`Discover` -> `castDevicesMsg`), `castTargets` supplies
+   the single stream or the playlist (http(s) only, start index remapped). Runs
+   against the Phase-1 stub: opens and polls in a cast build, is fully absent
+   from a default build (verified: the help hint string is dead-code-eliminated
+   from the default binary). Tests cover the popup flow and the http gate.
 3. `cast_on.go` real backends behind `//go:build cast`: go-chromecast (mDNS) +
    DLNA/UPnP (SSDP + AVTransport), merged discovery + single Cast.
 4. Playlist: `CastQueue` from `buildPlaylist`. Sequence casting works.

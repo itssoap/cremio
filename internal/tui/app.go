@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/itssoap/cremio/internal/account"
+	"github.com/itssoap/cremio/internal/cast"
 	"github.com/itssoap/cremio/internal/config"
 	"github.com/itssoap/cremio/internal/history"
 	"github.com/itssoap/cremio/internal/player"
@@ -50,6 +51,7 @@ type App struct {
 	detail     DetailModel
 	streams    StreamsModel
 	downloads  DownloadsModel
+	cast       CastModel
 }
 
 func NewApp(cfg *config.Config, hist *history.WatchHistory, incognito bool) App {
@@ -83,6 +85,7 @@ func NewApp(cfg *config.Config, hist *history.WatchHistory, incognito bool) App 
 		detail:     detail,
 		streams:    NewStreamsModel(client, cfg),
 		downloads:  NewDownloadsModel(dlMgr),
+		cast:       NewCastModel(),
 	}
 }
 
@@ -121,6 +124,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.detail.SetSize(msg.Width-4, contentHeight)
 		a.streams.SetSize(msg.Width-4, contentHeight)
 		a.downloads.SetSize(msg.Width-4, contentHeight)
+		a.cast.SetSize(msg.Width-4, contentHeight)
 		return a, nil
 
 	case tea.KeyMsg:
@@ -142,6 +146,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.downloads.IsVisible() {
 			var cmd tea.Cmd
 			a.downloads, cmd = a.downloads.Update(msg)
+			return a, cmd
+		}
+		// Cast popup (cast builds only): shift+c opens it on the streams screen.
+		// In a default build cast.Available is a compile-time false, so this whole
+		// branch is dead code and "C" does nothing, exactly as before.
+		if cast.Available && msg.String() == "C" && a.screen == ScreenStreams && !a.isTyping() {
+			if a.cast.IsVisible() {
+				a.cast.Close()
+				return a, nil
+			}
+			items, start, isPlaylist := a.streams.castTargets()
+			cmd := a.cast.Open(items, start, isPlaylist)
+			return a, cmd
+		}
+		if a.cast.IsVisible() {
+			var cmd tea.Cmd
+			a.cast, cmd = a.cast.Update(msg)
 			return a, cmd
 		}
 
@@ -340,6 +361,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Job finished, try processing next
 		return a, a.processDownloadQueue()
 
+	case castMsg:
+		// Discovery / cast-session updates for the cast popup.
+		var cmd tea.Cmd
+		a.cast, cmd = a.cast.Update(msg)
+		return a, cmd
+
 	case accountLoginMsg:
 		if a.account.ApplyLogin(msg) {
 			a.account.SetStatus("Syncing...")
@@ -452,6 +479,10 @@ func (a App) View() string {
 	// Overlay downloads popup
 	if a.downloads.IsVisible() {
 		view += "\n" + a.downloads.View()
+	}
+	// Overlay cast popup
+	if a.cast.IsVisible() {
+		view += "\n" + a.cast.View()
 	}
 
 	return view
