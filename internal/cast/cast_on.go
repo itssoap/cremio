@@ -10,10 +10,16 @@ package cast
 // Available reports whether this build includes cast support. True here.
 const Available = true
 
-// New returns the active Caster for the cast build.
-//
-// TODO(phase3): return a real Caster that fronts both a Chromecast (mDNS +
-// go-chromecast) and a DLNA/UPnP (SSDP + AVTransport) backend, merging their
-// discovered devices. For now it is the shared no-op so both build variants
-// compile and are testable before any dependency is added.
-func New() Caster { return noopCaster{} }
+// New returns the active Caster for the cast build: an aggregate over the
+// registered protocol backends. In sub-phase 3a no backends are registered yet
+// (so discovery yields nothing, exactly like the default build); 3b adds the
+// Chromecast backend and 3c the DLNA backend.
+func New() Caster {
+	return newAggregateCaster(backends()...)
+}
+
+// backends returns the protocol backends compiled into this build. 3b/3c append
+// the real Chromecast and DLNA backends here.
+func backends() []backend {
+	return nil
+}

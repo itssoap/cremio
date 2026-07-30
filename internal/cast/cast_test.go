@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// The shared no-op Caster (used by the default build, and by the cast build
-// until the real backends land) must never discover a device and must refuse
-// to cast. This test runs under both build variants.
+// The shared no-op Caster (used by the default build) must never discover a
+// device and must refuse to cast. Constructed directly so the test is valid in
+// both build variants regardless of what New() returns.
 func TestNoopCasterBehaviour(t *testing.T) {
-	c := New()
+	var c Caster = noopCaster{}
 	t.Cleanup(func() { _ = c.Close() })
 
 	ch, err := c.Discover(context.Background())

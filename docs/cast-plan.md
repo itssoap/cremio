@@ -156,10 +156,27 @@ The stub implements all methods as no-ops returning `ErrCastUnavailable`, and
    against the Phase-1 stub: opens and polls in a cast build, is fully absent
    from a default build (verified: the help hint string is dead-code-eliminated
    from the default binary). Tests cover the popup flow and the http gate.
-3. `cast_on.go` real backends behind `//go:build cast`: go-chromecast (mDNS) +
-   DLNA/UPnP (SSDP + AVTransport), merged discovery + single Cast.
-4. Playlist: `CastQueue` from `buildPlaylist`. Sequence casting works.
+3. Real backends (tag-gated), split into sub-phases so each is verifiable:
+   Both Chromecast and DLNA play one URI at a time, so a protocol-agnostic
+   client-side queue manager sits on top of thin per-protocol backends:
+   - `renderer`: controls one device (Load/Play/Pause/Stop/State/Close).
+   - `backend`: one protocol (Discover, Connect(device) renderer, Handles(kind)).
+   - `aggregateCaster` (implements cast.Caster): merges + dedups discovery from
+     all backends, routes a cast to the owning backend.
+   - `queueSession` (implements cast.Session): loads item, polls State, auto-
+     advances on end, handles next/prev/stop/status. Protocol-agnostic and
+     unit-tested with a fake backend/renderer.
+   3a (DONE): the protocol-agnostic core + interfaces + fake + tests. No
+      dependency, no device code; New() returns the aggregate with no backends
+      (same runtime behaviour as the stub).
+   3b: chromecastBackend (mDNS + github.com/vishen/go-chromecast), tag-gated.
+   3c: dlnaBackend (SSDP + github.com/huin/goupnp AVTransport), tag-gated.
+   The dependencies enter go.mod but are imported only under //go:build cast, so
+   the default build never links them.
+4. Playlist: `CastQueue` from `buildPlaylist` -> `queueSession`. (Core landed in
+   3a; real device advancement validated in 3b/3c.)
 5. Transport controls in the popup (play/pause/stop/next/prev) via `Session`.
+   (Popup keys landed in Phase 2; wired to `queueSession` in 3a.)
 6. CI: dual-variant build + release assets (`cremio-cast-<platform>`); README docs.
 
 ## Open questions
