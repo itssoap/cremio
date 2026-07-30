@@ -199,9 +199,14 @@ choice affects only the control channel, not playback.
       accept the URL. Registered first so DLNA devices sort first. goupnp enters
       go.mod but only under //go:build cast (verified: default binary links 0
       goupnp symbols; cast binary is ~0.4 MB larger).
-   3c: chromecastBackend (mDNS + github.com/vishen/go-chromecast), tag-gated.
-      Plays the file's default audio; embedded track switching not supported by
-      the default receiver (external subtitle side-load deferred to 5b).
+   3c (DONE): chromecastBackend (mDNS + github.com/vishen/go-chromecast),
+      tag-gated. Plays the file's default audio; embedded track switching not
+      supported by the default receiver (external subtitle side-load deferred to
+      5b). Registered after DLNA. A small castApp interface wraps the go-
+      chromecast Application so the state mapping + started guard are unit-tested
+      with a fake; device I/O is serialized (the Cast connection is stateful).
+      go-chromecast is imported only under //go:build cast (default binary links
+      0 of its symbols; cast binary ~3.4 MB larger overall).
    The dependencies enter go.mod but are imported only under //go:build cast, so
    the default build never links them.
 4. Playlist: `CastQueue` from `buildPlaylist` -> `queueSession`. (Core landed in
