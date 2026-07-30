@@ -174,6 +174,24 @@ On Linux or macOS, omit the `.exe` extension (I haven't tested the build on thes
 go build -o cremio .
 ```
 
+### Optional: casting build
+
+Casting to a device (DLNA/UPnP TVs, and Chromecast) is an opt-in feature behind
+the `cast` build tag. The default build above has no cast code or dependencies
+and `shift+c` does nothing. To build a variant with casting:
+
+```
+go build -tags cast -o cremio-cast.exe .
+```
+
+Releases ship both: `cremio-<platform>` (no cast) and `cremio-cast-<platform>`.
+With casting, press `shift+c` on the streams screen to open the device picker.
+Because the device decodes the file, switch audio and subtitle tracks with the
+device itself: on a DLNA TV use the TV's own remote (embedded tracks work
+through the TV menu); Chromecast plays the file's default audio. cremio does
+not transcode, so a stream only casts if the device can decode it (DLNA TVs
+generally handle more, e.g. MKV with DTS/TrueHD, than Chromecast).
+
 ### Windows Icon Embedding
 
 To embed a custom icon into the Windows executable, install go-winres and regenerate the resource files before building:

@@ -22,8 +22,14 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Vet (cast)
+        run: go vet -tags cast ./...
+
       - name: Test
         run: go test -race ./...
+
+      - name: Test (cast)
+        run: go test -tags cast -race ./...
 
   build:
     needs: test
@@ -89,11 +95,19 @@ jobs:
           CGO_ENABLED: "0"
         run: go build -o cremio-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }} .
 
+      - name: Build (cast)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -tags cast -o cremio-cast-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }} .
+
       - uses: actions/upload-artifact@v4
         with:
           name: cremio-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
             cremio-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+            cremio-cast-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
             cremio.png
 
   release:

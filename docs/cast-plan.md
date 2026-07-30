@@ -208,7 +208,11 @@ choice affects only the control channel, not playback.
    3a; real device advancement validated in 3b/3c.)
 5. Transport controls in the popup (play/pause/stop/next/prev) via `Session`.
    (Popup keys landed in Phase 2; wired to `queueSession` in 3a.)
-6. CI: dual-variant build + release assets (`cremio-cast-<platform>`); README docs.
+6. CI (DONE): the build workflow now builds both variants per platform
+   (`cremio-<platform>` and `cremio-cast-<platform>`) and vets/tests both
+   (`go test -tags cast -race ./...`); the release job globs all artifacts, so a
+   tagged release ships both sets. README documents the cast build and the
+   audio/subtitle switching model.
 
 ## Open questions
 
