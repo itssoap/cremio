@@ -70,6 +70,20 @@ err()   { printf "\033[31mERROR:\033[0m %s\n" "$1"; exit 1; }
 detect_arch() {
     local arch
     arch=$(uname -m)
+    # On Apple Silicon Macs, a Rosetta 2-translated process (an Intel-built
+    # Terminal/shell, or curl/bash launched under "Open using Rosetta") reports
+    # "x86_64" from `uname -m` even though the hardware is arm64. Detect that
+    # and correct it -- the same class of bug as Windows-on-ARM (#18), just on
+    # a different OS. sysctl.proc_translated is 1 only while this specific
+    # process is translated; hw.optional.arm64 is 1 whenever the physical CPU
+    # is Apple Silicon, translated or not. Both sysctls are absent on Intel
+    # Macs, where the comparisons simply fail and arch stays "x86_64".
+    if [ "$arch" = "x86_64" ] && [ "$(uname -s)" = "Darwin" ]; then
+        if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] || \
+           [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+            arch="arm64"
+        fi
+    fi
     case "$arch" in
         x86_64|amd64)  echo "amd64" ;;
         aarch64|arm64) echo "arm64" ;;

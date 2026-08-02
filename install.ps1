@@ -72,10 +72,27 @@ function Install-Cremio {
     function Write-Warn($msg) { Write-Host "!! " -NoNewline -ForegroundColor Yellow; Write-Host $msg }
 
     function Get-ArchSuffix {
-        $arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture) {
-            "Arm64" { "arm64" }
-            "X86"   { "386"   }
-            default { "amd64" }
+        # ProcessArchitecture reflects the CURRENT PROCESS, not the machine. On
+        # Windows-on-ARM, the default "Windows PowerShell" shortcut runs the x64
+        # build under emulation, so ProcessArchitecture reports "X64" even on
+        # ARM64 hardware -- causing the installer to fetch the amd64 build on an
+        # ARM64 device (#18). PROCESSOR_ARCHITEW6432 is set by Windows ONLY
+        # while the current process is running under WOW64 (x86-on-x64, or
+        # x64-on-ARM64 emulation) and always names the real, native OS
+        # architecture, so prefer it; PROCESSOR_ARCHITECTURE covers the native
+        # (non-emulated) case; OSArchitecture is a final defensive fallback.
+        $real = $env:PROCESSOR_ARCHITEW6432
+        if (-not $real) { $real = $env:PROCESSOR_ARCHITECTURE }
+        $arch = switch ($real) {
+            "ARM64" { "arm64" }
+            "x86"   { "386"   }
+            default {
+                switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+                    "Arm64" { "arm64" }
+                    "X86"   { "386"   }
+                    default { "amd64" }
+                }
+            }
         }
         return "windows-$arch"
     }
