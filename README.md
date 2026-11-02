@@ -278,10 +278,11 @@ The file uses a simple JSON structure:
 
 | Key        | Action                                      |
 |------------|---------------------------------------------|
-| `tab`      | Cycle between Home, Search, Addons, Filters, and History tabs |
+| `tab`      | Next tab (Home, History, Search, Addons, Filters, Account). Works from every screen, including a title's Detail and Streams pages |
+| `shift+tab`| Previous tab |
 | `/`        | Focus the search input (Search tab) / filter (Streams) |
 | `enter`    | Select item / submit input / edit filter field |
-| `esc`      | Go back / unfocus input / cancel loading      |
+| `esc`      | Go back / unfocus input / cancel loading. On a top-level tab with nothing left to back out of, asks "Exit cremio?" (`y` exits, `n`/`esc` stays) |
 | `w`        | Toggle watched (episode, season, or movie)  |
 | `f`        | Fetch streams for all episodes (series)     |
 | `d`        | Download stream or batch download (series/streams) |

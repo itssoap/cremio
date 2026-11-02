@@ -50,6 +50,9 @@ type App struct {
 	detail     DetailModel
 	streams    StreamsModel
 	downloads  DownloadsModel
+
+	// confirmExit shows the "Exit cremio?" popup (raised by esc on a root screen).
+	confirmExit bool
 }
 
 func NewApp(cfg *config.Config, hist *history.WatchHistory, incognito bool) App {
@@ -133,6 +136,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "q" && !a.isTyping() {
 			return a, tea.Quit
 		}
+		// Exit confirmation is modal: it swallows every other key.
+		if a.confirmExit {
+			switch msg.String() {
+			case "y", "Y":
+				return a, tea.Quit
+			case "n", "N", "esc", "enter":
+				a.confirmExit = false
+			}
+			return a, nil
+		}
 		// Global: toggle downloads popup
 		if msg.String() == "D" && !a.isTyping() {
 			a.downloads.Toggle()
@@ -147,7 +160,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "esc", "escape":
-			// esc is a back key only; it never quits the app.
+			// esc is a back key. On a root screen with nothing left to back out
+			// of, ask before exiting instead of quitting outright.
+			if a.atRoot() {
+				a.confirmExit = true
+				return a, nil
+			}
 			if a.screen == ScreenStreams && (a.streams.filterActive || a.streams.rgSelectorActive || a.streams.rgEpSelectorActive) {
 				break
 			}
@@ -163,65 +181,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.screen = ScreenDetail
 				return a, nil
 			}
-		case "tab":
-			// Don't switch tabs while typing in a list's built-in filter.
-			if a.listFiltering() {
-				break
-			}
-			if a.screen == ScreenDetail || a.screen == ScreenStreams {
-				// Allow tab to escape back from error states
-				if (a.screen == ScreenDetail && a.detail.err != nil) || (a.screen == ScreenStreams && a.streams.err != nil) {
-					a.screen = a.prevScreen
-					return a, nil
-				}
-				break
-			}
-			if a.screen == ScreenAddons && a.addons.inputActive {
-				break
-			}
-			if a.screen == ScreenSearch && a.search.inputFocused {
-				break
-			}
-			if a.screen == ScreenFilters && a.filters.editingInput() {
-				break
-			}
+		case "tab", "shift+tab":
+			forward := msg.String() == "tab"
+			// The account login form uses tab / shift+tab to move between its
+			// fields, and only hands them to the tab bar once they run off either
+			// end, so the form never traps the user.
 			if a.screen == ScreenAccount && a.account.editingInput() {
-				break
+				if (forward && a.account.focus < len(a.account.inputs)-1) || (!forward && a.account.focus > 0) {
+					break
+				}
 			}
-			switch a.screen {
-			case ScreenHome:
-				if a.hasHistory() {
-					a.screen = ScreenHistory
-					a.historyTab.Refresh()
-					return a, a.historyTab.FetchMissingTitles()
-				}
-				a.screen = ScreenSearch
-				if a.config.AutoFocusSearch {
-					a.search.inputFocused = true
-					return a, a.search.input.Focus()
-				}
-				return a, nil
-			case ScreenHistory:
-				a.screen = ScreenSearch
-				if a.config.AutoFocusSearch {
-					a.search.inputFocused = true
-					return a, a.search.input.Focus()
-				}
-				return a, nil
-			case ScreenSearch:
-				a.screen = ScreenAddons
-				return a, nil
-			case ScreenAddons:
-				a.screen = ScreenFilters
-				return a, nil
-			case ScreenFilters:
-				a.screen = ScreenAccount
-				return a, nil
-			case ScreenAccount:
-				a.screen = ScreenHome
-				return a, a.home.Init()
+			delta := -1
+			if forward {
+				delta = 1
 			}
-			return a, nil
+			return a, a.switchTab(delta)
 		}
 
 	case NavigateToDetailMsg:
@@ -449,6 +423,14 @@ func (a App) View() string {
 
 	view := AppStyle.Render(lipgloss.JoinVertical(lipgloss.Left, tabs+dlStatus, content))
 
+	// Overlay exit confirmation
+	if a.confirmExit {
+		box := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("62")).
+			Padding(0, 1)
+		view += "\n" + box.Render(TitleStyle.Render("Exit cremio?")+"\n\n"+HelpStyle.Render("y: exit • n/esc: stay"))
+	}
 	// Overlay downloads popup
 	if a.downloads.IsVisible() {
 		view += "\n" + a.downloads.View()
@@ -537,16 +519,117 @@ func (a App) processDownloadQueue() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (a App) renderTabs() string {
-	type tab struct {
-		name   string
-		screen Screen
-	}
-	tabs := []tab{{"Home", ScreenHome}}
+// tabDef is one entry of the tab bar.
+type tabDef struct {
+	name   string
+	screen Screen
+}
+
+// tabs is the single source of truth for tab order, shared by the tab bar and
+// tab / shift+tab navigation. History only appears once there is some.
+func (a App) tabs() []tabDef {
+	tabs := []tabDef{{"Home", ScreenHome}}
 	if a.hasHistory() {
-		tabs = append(tabs, tab{"History", ScreenHistory})
+		tabs = append(tabs, tabDef{"History", ScreenHistory})
 	}
-	tabs = append(tabs, tab{"Search", ScreenSearch}, tab{"Addons", ScreenAddons}, tab{"Filters", ScreenFilters}, tab{"Account", ScreenAccount})
+	return append(tabs, tabDef{"Search", ScreenSearch}, tabDef{"Addons", ScreenAddons}, tabDef{"Filters", ScreenFilters}, tabDef{"Account", ScreenAccount})
+}
+
+// switchTab moves delta tabs forward (or back, when negative), wrapping around.
+// From Detail or Streams it moves relative to the tab they were opened from.
+func (a *App) switchTab(delta int) tea.Cmd {
+	cur := a.screen
+	if cur == ScreenDetail || cur == ScreenStreams {
+		cur = a.prevScreen
+	}
+	tabs := a.tabs()
+	idx := 0
+	for i, t := range tabs {
+		if t.screen == cur {
+			idx = i
+			break
+		}
+	}
+	a.releaseFocus()
+	return a.enterTab(tabs[(idx+delta+len(tabs))%len(tabs)].screen)
+}
+
+// enterTab shows a tab and runs its on-arrival work.
+func (a *App) enterTab(s Screen) tea.Cmd {
+	a.screen = s
+	switch s {
+	case ScreenHome:
+		return a.home.Init()
+	case ScreenHistory:
+		a.historyTab.Refresh()
+		return a.historyTab.FetchMissingTitles()
+	case ScreenSearch:
+		if a.config.AutoFocusSearch {
+			a.search.inputFocused = true
+			return a.search.input.Focus()
+		}
+	case ScreenAccount:
+		// A logged-out form always opens on its first field.
+		if a.account.editingInput() {
+			a.account.focusField(accEmailIdx)
+		}
+	}
+	return nil
+}
+
+// releaseFocus abandons any in-progress input or selector on the current
+// screen, so switching tabs never leaves a hidden text field capturing keys.
+func (a *App) releaseFocus() {
+	switch a.screen {
+	case ScreenHome:
+		if a.home.list.FilterState() == list.Filtering {
+			a.home.list.ResetFilter()
+		}
+	case ScreenHistory:
+		if a.historyTab.list.FilterState() == list.Filtering {
+			a.historyTab.list.ResetFilter()
+		}
+	case ScreenSearch:
+		a.search.inputFocused = false
+		a.search.input.Blur()
+		a.search.selectorActive = false
+	case ScreenAddons:
+		a.addons.inputActive = false
+		a.addons.input.Blur()
+		a.addons.input.SetValue("")
+	case ScreenFilters:
+		a.filters.cancelEdit()
+	case ScreenStreams:
+		a.streams.filterActive = false
+		a.streams.filterInput.Blur()
+		a.streams.loading = false
+		a.streams.resetDownloadState()
+	}
+}
+
+// atRoot reports whether esc has nothing left to do on the current screen: it
+// is a top-level tab with no text input, selector, or list filter to back out
+// of. Only then does esc raise the exit confirmation.
+func (a App) atRoot() bool {
+	switch a.screen {
+	case ScreenHome:
+		return a.home.list.FilterState() == list.Unfiltered
+	case ScreenHistory:
+		return a.historyTab.list.FilterState() == list.Unfiltered
+	case ScreenSearch:
+		return !a.search.inputFocused && !a.search.selectorActive
+	case ScreenAddons:
+		return !a.addons.inputActive
+	case ScreenFilters:
+		return !a.filters.editingInput()
+	case ScreenAccount:
+		return !a.account.editingInput()
+	}
+	return false
+}
+
+func (a App) renderTabs() string {
+	tabs := a.tabs()
 
 	var rendered []string
 	if a.incognito {

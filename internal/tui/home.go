@@ -12,7 +12,7 @@ import (
 	"github.com/itssoap/cremio/internal/stremio"
 )
 
-const homeHelpText = "enter: open • tab: switch tab • D: downloads • q: quit"
+const homeHelpText = "enter: open • tab/shift+tab: switch tab • D: downloads • q: quit"
 
 type catalogItem struct {
 	meta    stremio.MetaPreview

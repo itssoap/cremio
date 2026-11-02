@@ -365,7 +365,7 @@ func (m DetailModel) View() string {
 		return m.spinner.View() + " Loading details..."
 	}
 	if m.err != nil {
-		return ErrorStyle.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" + HelpStyle.Render("esc: back • tab: switch tab • D: downloads • q: quit")
+		return ErrorStyle.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" + HelpStyle.Render("esc: back • tab/shift+tab: switch tab • D: downloads • q: quit")
 	}
 	if m.meta == nil {
 		return ""

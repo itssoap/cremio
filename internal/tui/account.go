@@ -349,7 +349,7 @@ func (m AccountModel) View() string {
 		if m.status != "" {
 			b.WriteString("\n" + SubtitleStyle.Render(m.status) + "\n")
 		}
-		b.WriteString("\n" + HelpStyle.Render("s: sync now • L: log out • tab: switch tab • D: downloads • q: quit"))
+		b.WriteString("\n" + HelpStyle.Render("s: sync now • L: log out • tab/shift+tab: switch tab • D: downloads • q: quit"))
 
 	case accSubmitting:
 		b.WriteString(SubtitleStyle.Render("Signing in..."))
@@ -379,7 +379,7 @@ func (m AccountModel) View() string {
 		if m.focused {
 			b.WriteString(HelpStyle.Render("tab: next field • enter: sign in • esc: leave form"))
 		} else {
-			b.WriteString(HelpStyle.Render("enter: focus form • tab: switch tab • q: quit"))
+			b.WriteString(HelpStyle.Render("enter: focus form • tab/shift+tab: switch tab • q: quit"))
 		}
 	}
 

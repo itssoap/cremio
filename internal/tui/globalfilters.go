@@ -94,6 +94,16 @@ func (m *GlobalFiltersModel) commit() {
 	m.saved = true
 }
 
+// cancelEdit abandons an in-progress edit and reverts the field to its saved value.
+func (m *GlobalFiltersModel) cancelEdit() {
+	if !m.editing {
+		return
+	}
+	m.editing = false
+	m.inputs[m.cursor].Blur()
+	m.inputs[m.cursor].SetValue(globalFilterFields[m.cursor].get(&m.config.GlobalFilters))
+}
+
 func (m GlobalFiltersModel) Update(msg tea.Msg) (GlobalFiltersModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -105,10 +115,7 @@ func (m GlobalFiltersModel) Update(msg tea.Msg) (GlobalFiltersModel, tea.Cmd) {
 				m.commit()
 				return m, nil
 			case "esc":
-				// Revert this field to the saved value.
-				m.editing = false
-				m.inputs[m.cursor].Blur()
-				m.inputs[m.cursor].SetValue(globalFilterFields[m.cursor].get(&m.config.GlobalFilters))
+				m.cancelEdit()
 				return m, nil
 			}
 			var cmd tea.Cmd
@@ -186,7 +193,7 @@ func (m GlobalFiltersModel) View() string {
 	if m.editing {
 		b.WriteString(HelpStyle.Render("enter: save • esc: cancel edit"))
 	} else {
-		b.WriteString(HelpStyle.Render("up/down: field • enter: edit • c: clear • C: clear all • tab: switch tab • D: downloads • q: quit"))
+		b.WriteString(HelpStyle.Render("up/down: field • enter: edit • c: clear • C: clear all • tab/shift+tab: switch tab • D: downloads • q: quit"))
 	}
 
 	return lipgloss.NewStyle().Padding(0, 0).Render(b.String())
